@@ -1,0 +1,79 @@
+/*
+ * Tokens del sistema de diseño, extraídos 1:1 del diseño original de Claude
+ * Design (proyecto "i-witown"). Son la fuente de verdad visual de toda la app:
+ * ningún componente inventa un color o un radio, todos leen de aquí.
+ */
+
+:root {
+  /* Marca */
+  --iw-plum: #17171a;
+  --iw-plum-dark: #0c0c0e;
+  --iw-plum-darkest: #0a0a0b;
+  --iw-ink-cool: #040405;
+  --iw-orange: #17171a;
+  --iw-amber: #c79200;
+  --iw-orange-red: #e0341d;
+  --iw-yellow: #ffd100;
+  --iw-yellow-deep: #e6b800;
+  --iw-cream: #f4f4f5;
+  --iw-off-white: #f7f7f8;
+  --iw-sand: #e6e6ea;
+  --iw-brown: #4b4b52;
+  --iw-slate-700: #2a2a2e;
+  --iw-slate-500: #8a8a93;
+  --iw-white: #fff;
+
+  /* Superficies */
+  --surface-base: #f4f4f5;
+  --surface-card: #fff;
+  --surface-muted: #f7f7f8;
+  --surface-sunken: #eeeef0;
+  --surface-inverse: #17171a;
+  --surface-inverse-deep: #0a0a0b;
+
+  /* Texto */
+  --text-primary: #17171a;
+  --text-secondary: #4b4b52;
+  --text-muted: #8a8a93;
+  --text-on-dark: #f4f4f5;
+  --text-on-accent: #fff;
+
+  /* Semánticos */
+  --brand-primary: #17171a;
+  --brand-accent: #17171a;
+  --color-success: #15774f;
+  --color-warning: #c79200;
+  --color-danger: #e0341d;
+  --color-highlight: #ffd100;
+
+  /* Bordes / foco */
+  --border-subtle: #e6e6ea;
+  --border-strong: rgba(0, 0, 0, 0.16);
+  --focus-ring: rgba(255, 209, 0, 0.5);
+
+  /* Radios */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 9px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-2xl: 20px;
+  --radius-pill: 999px;
+
+  /* Sombras */
+  --shadow-xs: 0 1px 2px rgba(20, 20, 25, 0.06);
+  --shadow-sm: 0 2px 6px rgba(20, 20, 25, 0.07);
+  --shadow-md: 0 6px 20px rgba(20, 20, 25, 0.1);
+  --shadow-lg: 0 18px 44px rgba(20, 20, 25, 0.16);
+  --shadow-accent: 0 6px 18px rgba(20, 20, 25, 0.2);
+
+  /* Tipografía */
+  --font-display: 'Space Grotesk', system-ui, sans-serif;
+  --font-body: 'Manrope', system-ui, sans-serif;
+
+  /* Movimiento (el DS original define estas variables; las fijamos aquí) */
+  --dur-fast: 0.14s;
+  --dur-base: 0.24s;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+}

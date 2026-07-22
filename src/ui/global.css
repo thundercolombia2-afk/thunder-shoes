@@ -1,0 +1,135 @@
+/* Base global. Reset mínimo + animaciones compartidas del diseño. */
+
+@import './tokens.css';
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--iw-plum-darkest);
+  font-family: var(--font-body);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button {
+  border-radius: var(--radius-lg);
+  font-family: var(--font-body);
+}
+
+input,
+select {
+  font-family: var(--font-body);
+}
+
+/* Animaciones (idénticas al diseño) */
+@keyframes iwfade {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes iwscan {
+  0% {
+    top: 16%;
+    opacity: 0.2;
+  }
+  50% {
+    top: 80%;
+    opacity: 1;
+  }
+  100% {
+    top: 16%;
+    opacity: 0.2;
+  }
+}
+
+@keyframes iwscanbox {
+  0% {
+    top: 12%;
+  }
+  50% {
+    top: 82%;
+  }
+  100% {
+    top: 12%;
+  }
+}
+
+@keyframes iwpop {
+  0% {
+    transform: scale(0.4);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* Utilidades de interacción reutilizadas por varias pantallas */
+.iw-fade {
+  animation: iwfade 0.3s var(--ease-out);
+}
+
+.iw-nav:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.iw-row:hover {
+  background: var(--iw-off-white) !important;
+}
+
+.iw-press {
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+.iw-press:active {
+  transform: scale(0.97);
+}
+
+/* Código de barras decorativo (patrón de rayas del diseño) */
+.iw-barcode {
+  background-image: repeating-linear-gradient(
+    90deg,
+    var(--iw-plum-darkest) 0,
+    var(--iw-plum-darkest) 1px,
+    transparent 1px,
+    transparent 3px,
+    var(--iw-plum-darkest) 3px,
+    var(--iw-plum-darkest) 5px,
+    transparent 5px,
+    transparent 6px,
+    var(--iw-plum-darkest) 6px,
+    var(--iw-plum-darkest) 9px,
+    transparent 9px,
+    transparent 11px
+  );
+}
+
+/* Scrollbar discreta en las zonas de scroll del shell */
+.iw-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--iw-sand) transparent;
+}
+.iw-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.iw-scroll::-webkit-scrollbar-thumb {
+  background: var(--iw-sand);
+  border-radius: var(--radius-pill);
+}

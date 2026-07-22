@@ -1,0 +1,146 @@
+rules_version = '2';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reglas de seguridad de Thunder POS.
+//
+// Modelo: cada persona inicia sesión (correo + contraseña). El ROL vive en
+// users/{uid} y lo leen las reglas — nunca se confía en lo que diga el cliente.
+//
+// Lo que garantizan estas reglas:
+//  · Solo cuentas con perfil operan (crear/leer catálogo, movimientos, etc.).
+//  · El libro mayor de movimientos es INMUTABLE y queda firmado con el uid real.
+//  · Un empleado NO puede ascenderse a socio: registrarse exige una invitación
+//    cuyo rol lo fijó un socio, y el rol del perfil debe coincidir con esa
+//    invitación. Solo un socio puede crear invitaciones.
+//
+// Nota honesta sobre costos: el costo vive dentro del documento del producto.
+// La app lo OCULTA a los empleados en la interfaz, pero una regla no puede
+// ocultar un campo suelto: un empleado con conocimientos técnicos podría leerlo
+// inspeccionando la app. Para ocultarlo de verdad hay que moverlo a una
+// colección aparte legible solo por socios y calcular la utilidad en el
+// servidor (Cloud Functions, plan Blaze). Ver README.
+// ─────────────────────────────────────────────────────────────────────────────
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+    function uid() {
+      return request.auth.uid;
+    }
+    function hasProfile() {
+      return signedIn() && exists(/databases/$(database)/documents/users/$(uid()));
+    }
+    function isSocio() {
+      return hasProfile()
+        && get(/databases/$(database)/documents/users/$(uid())).data.role == 'socio';
+    }
+
+    // ── Centinela de arranque ─────────────────────────────────────────────────
+    // Lectura pública: solo dice si ya hay dueño, sin datos sensibles. Así la
+    // pantalla de registro sabe (sin sesión) si mostrar el campo de invitación.
+    match /system/state {
+      allow get: if true;
+      allow create: if signedIn()
+        && !exists(/databases/$(database)/documents/system/state);
+      allow update, delete: if false;
+    }
+
+    // ── Personas ──────────────────────────────────────────────────────────────
+    match /users/{userId} {
+      allow read: if signedIn();
+
+      // Crear tu propio perfil: o eres el arranque (primer socio) o traes una
+      // invitación válida cuyo rol coincide con el que te asignas.
+      allow create: if uid() == userId
+        && request.resource.data.role in ['socio', 'empleado']
+        && (isBootstrapCreate() || hasValidInvite(request.resource.data));
+
+      // Cada quien edita su propio perfil (nombre, etc.), pero NUNCA su rol,
+      // su correo ni su fecha de alta: eso evita autoascensos.
+      allow update: if uid() == userId
+        && request.resource.data.role == resource.data.role
+        && request.resource.data.email == resource.data.email
+        && request.resource.data.createdAt == resource.data.createdAt;
+
+      allow delete: if false;
+    }
+
+    function isBootstrapCreate() {
+      return request.resource.data.role == 'socio'
+        && !exists(/databases/$(database)/documents/system/state);
+    }
+    function hasValidInvite(data) {
+      return 'inviteCode' in data
+        && exists(/databases/$(database)/documents/invites/$(data.inviteCode))
+        && get(/databases/$(database)/documents/invites/$(data.inviteCode)).data.active == true
+        && get(/databases/$(database)/documents/invites/$(data.inviteCode)).data.role == data.role;
+    }
+
+    // ── Invitaciones ──────────────────────────────────────────────────────────
+    match /invites/{code} {
+      allow read: if signedIn();
+
+      // Solo un socio genera invitaciones, y solo activas y a su nombre.
+      allow create: if isSocio()
+        && request.resource.data.role in ['socio', 'empleado']
+        && request.resource.data.active == true
+        && request.resource.data.createdBy == uid();
+
+      // Consumir: pasar de activa a usada, marcándose uno mismo, sin cambiar rol.
+      allow update: if signedIn()
+        && resource.data.active == true
+        && request.resource.data.active == false
+        && request.resource.data.usedBy == uid()
+        && request.resource.data.role == resource.data.role;
+
+      allow delete: if false;
+    }
+
+    // ── Catálogo, locales y agregados: cualquier persona con perfil opera ──────
+    match /stores/{storeId} {
+      allow read, write: if hasProfile();
+    }
+    match /products/{productId} {
+      allow read, write: if hasProfile();
+      match /variants/{size} {
+        allow read, write: if hasProfile();
+      }
+    }
+    match /barcodes/{barcode} {
+      allow read, write: if hasProfile();
+    }
+    match /dailyStats/{dayKey} {
+      allow read, write: if hasProfile();
+    }
+
+    // ── Libro mayor (INMUTABLE, firmado por el uid real) ──────────────────────
+    match /movements/{movementId} {
+      allow read: if hasProfile();
+      allow create: if hasProfile()
+        && request.resource.data.userId == uid()
+        && isValidMovement(request.resource.data);
+      allow update, delete: if false;
+    }
+
+    function isValidMovement(m) {
+      return m.type in ['sale', 'purchase', 'return']
+        && m.quantity is int && m.quantity >= 1
+        && m.productId is string
+        && m.variantId is string
+        && m.storeId is string
+        && m.userId is string
+        && m.total is number
+        && m.stockAfter is int
+        && m.dayKey is string
+        && m.occurredAt is timestamp;
+    }
+
+    // Todo lo demás, denegado.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
