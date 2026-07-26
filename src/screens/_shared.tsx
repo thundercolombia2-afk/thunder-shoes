@@ -1,8 +1,11 @@
 /** Piezas compartidas entre las pantallas del flujo de escaneo e inventario. */
 
 import type { ReactNode } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { useSession } from '@/app/session'
 import { Icon } from '@/ui/Icon'
 import type { VariantWithProduct } from '@/domain/models'
+import { ROLE_LABEL, type Role } from '@/domain/users'
 import { variantStatus, type StockStatus } from '@/domain/rules'
 
 /** Enlace de "volver" con chevron, como en el diseño. */
@@ -129,25 +132,93 @@ export function QuantityStepper({
  * Distintivo del rol. Reemplaza el antiguo botón de PIN: los costos ya no se
  * "desbloquean", se ven (o no) según el rol de quien inició sesión.
  */
-export function RoleBadge({ role }: { role: 'socio' | 'empleado' }) {
-  const socio = role === 'socio'
+export function RoleBadge({ role }: { role: Role }) {
+  // Socio y bodeguero ven costos; el empleado no.
+  const seesCosts = role !== 'empleado'
   return (
     <span
       style={{
         display: 'inline-flex',
         alignItems: 'center',
         gap: 6,
-        background: socio ? 'rgba(21,119,79,.12)' : 'var(--surface-sunken)',
-        color: socio ? 'var(--color-success)' : 'var(--text-secondary)',
-        border: `1.5px solid ${socio ? 'rgba(21,119,79,.4)' : 'var(--border-subtle)'}`,
+        background: seesCosts ? 'rgba(21,119,79,.12)' : 'var(--surface-sunken)',
+        color: seesCosts ? 'var(--color-success)' : 'var(--text-secondary)',
+        border: `1.5px solid ${seesCosts ? 'rgba(21,119,79,.4)' : 'var(--border-subtle)'}`,
         borderRadius: 'var(--radius-pill)',
         padding: '7px 13px',
         font: '700 12px var(--font-body)',
       }}
     >
-      <Icon name={socio ? 'unlock' : 'lock'} size={15} strokeWidth={2.2} />
-      {socio ? 'Socio · ve costos' : 'Empleado'}
+      <Icon name={seesCosts ? 'unlock' : 'lock'} size={15} strokeWidth={2.2} />
+      {ROLE_LABEL[role]}
+      {seesCosts ? ' · ve costos' : ''}
     </span>
+  )
+}
+
+/**
+ * Pestañas de la sección Inventario. Son enlaces de verdad (cambian la ruta),
+ * no estado local: así "Agregar referencia" se puede compartir y el botón de
+ * atrás del navegador hace lo que uno espera.
+ */
+export function InventoryTabs({ active }: { active: 'list' | 'add' | 'new' }) {
+  const navigate = useNavigate()
+  const tab = (on: boolean): React.CSSProperties => ({
+    padding: '11px 18px',
+    borderRadius: 'var(--radius-lg)',
+    font: '700 14px var(--font-body)',
+    cursor: 'pointer',
+    border: `1px solid ${on ? 'var(--iw-plum)' : 'var(--border-subtle)'}`,
+    background: on ? 'var(--iw-plum)' : 'var(--surface-card)',
+    color: on ? '#fff' : 'var(--text-secondary)',
+    whiteSpace: 'nowrap',
+  })
+
+  return (
+    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+      <button onClick={() => navigate('/inventory')} style={tab(active === 'list')} className="iw-press">
+        Productos
+      </button>
+      <button onClick={() => navigate('/inventory/add')} style={tab(active === 'add')} className="iw-press">
+        Agregar producto
+      </button>
+      <button onClick={() => navigate('/inventory/new')} style={tab(active === 'new')} className="iw-press">
+        Crear referencia
+      </button>
+    </div>
+  )
+}
+
+/**
+ * Marco común de las tres vistas de Inventario (Productos, Agregar producto y
+ * Crear referencia). Todas comparten el MISMO encabezado —título "Inventario",
+ * distintivo de rol y las pestañas— y el mismo contenedor, para que cambiar de
+ * pestaña no cambie el formato de la página. `action` es un botón opcional a la
+ * derecha del título (p. ej. "Nueva" en la lista).
+ */
+export function InventoryLayout({
+  active,
+  action,
+  children,
+}: {
+  active: 'list' | 'add' | 'new'
+  action?: ReactNode
+  children: ReactNode
+}) {
+  const { user } = useSession()
+  return (
+    <div
+      className="iw-fade"
+      style={{ padding: '18px 20px 28px', display: 'flex', flexDirection: 'column', gap: 16, width: '100%', boxSizing: 'border-box' }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <h1 style={{ margin: 0, font: '700 24px var(--font-display)', flex: 1 }}>Inventario</h1>
+        {user ? <RoleBadge role={user.role} /> : null}
+        {action}
+      </div>
+      <InventoryTabs active={active} />
+      {children}
+    </div>
   )
 }
 

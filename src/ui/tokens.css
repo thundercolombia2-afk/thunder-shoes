@@ -68,8 +68,10 @@
   --shadow-accent: 0 6px 18px rgba(20, 20, 25, 0.2);
 
   /* Tipografía */
-  --font-display: 'Space Grotesk', system-ui, sans-serif;
-  --font-body: 'Manrope', system-ui, sans-serif;
+  --font-display: 'Archivo', system-ui, sans-serif;
+  --font-body: 'Archivo', system-ui, sans-serif;
+  /* Los códigos siempre en monoespaciada: se leen dígito a dígito. */
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
 
   /* Movimiento (el DS original define estas variables; las fijamos aquí) */
   --dur-fast: 0.14s;

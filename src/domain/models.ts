@@ -7,6 +7,7 @@
 export type Brand<T, K extends string> = T & { readonly __brand: K }
 
 export type StoreId = Brand<string, 'StoreId'>
+export type BodegaId = Brand<string, 'BodegaId'>
 export type ProductId = Brand<string, 'ProductId'>
 export type VariantId = Brand<string, 'VariantId'>
 export type MovementId = Brand<string, 'MovementId'>
@@ -34,8 +35,8 @@ export const isSize = (n: number): n is Size => (SIZES as readonly number[]).inc
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Un local es un PUNTO DE VENTA, no una bodega. El stock es central y
- * compartido; el local solo atribuye quién hizo el movimiento.
+ * Un local es un PUNTO DE VENTA. Cada local lleva su propio stock (ver
+ * `Variant.stockByLocation`). Los usuarios de venta quedan amarrados a un local.
  */
 export interface Store {
   id: StoreId
@@ -43,6 +44,22 @@ export interface Store {
   code: string
   name: string
   active: boolean
+}
+
+/**
+ * Una bodega es un ALMACÉN, no un punto de venta. Puede haber varias,
+ * independientes, y se crean desde Configuración. Cada bodega lleva su propio
+ * stock por talla (ver `Variant.stockByLocation`). Quién puede operarla se
+ * decide en el PERFIL de cada usuario (`UserProfile.bodegaIds`), que la dueña
+ * asigna al invitar o desde Configuración.
+ */
+export interface Bodega {
+  id: BodegaId
+  /** Código/nombre corto visible: "Bodega 4". */
+  code: string
+  name: string
+  active: boolean
+  createdAt: Date
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -66,8 +83,6 @@ export interface Product {
   /** Umbral de alerta por talla. */
   minStock: number
   active: boolean
-  /** Tokens en minúsculas para búsqueda por prefijo desde Firestore. */
-  searchTokens: string[]
   createdAt: Date
   updatedAt: Date
 }
@@ -82,7 +97,17 @@ export interface Variant {
   size: Size
   /** Código de barras impreso en la etiqueta. Único en todo el sistema. */
   barcode: string
+  /**
+   * Stock TOTAL del sistema (suma de todas las ubicaciones). Se mantiene como
+   * proyección para la lista de inventario y las alertas de bajo stock sin leer
+   * el mapa. Invariante: `stock === Σ stockByLocation`.
+   */
   stock: number
+  /**
+   * Stock por ubicación: `{ [claveDeUbicacion]: cantidad }`, con la clave de
+   * `domain/locations.ts` ("s:163" para un local, "b:abc" para una bodega).
+   */
+  stockByLocation: Record<string, number>
   /** Copiado del producto para poder consultar bajo-stock sin joins. */
   minStock: number
   active: boolean
@@ -99,15 +124,51 @@ export interface VariantWithProduct {
 // Movimientos (libro mayor)
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const MOVEMENT_TYPES = ['sale', 'purchase', 'return'] as const
+/**
+ * Tipos de asiento:
+ *  · sale     — venta: saca stock del local del vendedor.
+ *  · purchase — entrada de mercancía: mete stock a una bodega.
+ *  · return   — devolución de un cliente: regresa stock al local.
+ *  · salida   — traslado bodega → local (se destina a un usuario/su local).
+ *  · retorno  — traslado local → bodega.
+ * `salida` y `retorno` son TRASLADOS: mueven stock entre dos ubicaciones sin
+ * cambiar el total del sistema.
+ */
+export const MOVEMENT_TYPES = ['sale', 'purchase', 'return', 'salida', 'retorno'] as const
 export type MovementType = (typeof MOVEMENT_TYPES)[number]
+
+/** Traslados: afectan dos ubicaciones (from −, to +). */
+export const TRANSFER_TYPES = ['salida', 'retorno'] as const
+export const isTransfer = (type: MovementType): boolean =>
+  (TRANSFER_TYPES as readonly string[]).includes(type)
 
 export const RETURN_REASONS = [
   'Talla incorrecta',
   'No se envió a domicilio',
   'No la recogió el cliente',
+  'Defecto de fábrica',
+  'Cambio de modelo',
+  'No le gustó',
+  'Error en la venta',
+  'Otro',
 ] as const
 export type ReturnReason = (typeof RETURN_REASONS)[number]
+
+/**
+ * Formas de pago que se aceptan en caja. Se guardan en el movimiento para
+ * poder cuadrar la caja al cierre: cuánto entró en efectivo, cuánto por
+ * transferencia y cuánto por cada medio.
+ */
+export const PAYMENT_METHODS = [
+  'Efectivo',
+  'Transferencia',
+  'Nequi',
+  'Daviplata',
+  'Nu Bank',
+  'Tarjeta',
+  'Otro',
+] as const
+export type PaymentMethod = (typeof PAYMENT_METHODS)[number]
 
 /**
  * Un movimiento es un asiento INMUTABLE. Nunca se edita ni se borra:
@@ -151,7 +212,32 @@ export interface Movement {
   userId: UserId
   userName: string
 
+  /**
+   * Ubicaciones afectadas (claves de `domain/locations.ts`). La de origen pierde
+   * stock y la de destino lo gana:
+   *  · sale     → `fromLocation` (el local; sin destino).
+   *  · purchase → `toLocation` (la bodega; sin origen).
+   *  · return   → `toLocation` (el local; regresa).
+   *  · salida   → `fromLocation` (bodega) y `toLocation` (local).
+   *  · retorno  → `fromLocation` (local) y `toLocation` (bodega).
+   */
+  fromLocation?: string
+  toLocation?: string
+
   returnReason?: ReturnReason
+
+  /**
+   * Agrupa las líneas de una misma venta. Un carrito de 3 pares genera 3
+   * asientos (uno por variante, para que el stock cuadre talla por talla) que
+   * comparten este id: así el historial puede reconstruir el tiquete completo.
+   */
+  saleId?: string
+  /** Forma de pago (Efectivo, Transferencia, …). Solo en ventas. */
+  payment?: string
+  /** Nombre del cliente. Opcional en venta rápida. */
+  customerName?: string
+  /** Teléfono del cliente: sirve para avisar de un cambio o una talla que llegó. */
+  customerPhone?: string
 
   occurredAt: Date
   /** "2026-07-15" en horario de Colombia. Clave de agrupación para reportes. */
@@ -166,6 +252,22 @@ export interface MovementDraft {
   /** Solo en compras: costo unitario, editable por el usuario. */
   unitCostOverride?: Money
   returnReason?: ReturnReason
+  /** Ubicación de origen (traslados y ventas). Clave de `domain/locations.ts`. */
+  fromLocation?: string
+  /** Ubicación de destino (entradas, devoluciones y traslados). */
+  toLocation?: string
+}
+
+/** Datos comunes a todas las líneas de una misma venta (el "tiquete"). */
+export interface SaleMeta {
+  payment: string
+  customerName?: string
+  customerPhone?: string
+  /**
+   * Id de una venta EXISTENTE. Lo usa la devolución para quedar amarrada a la
+   * venta original, y así saber cuánto de cada talla ya se devolvió.
+   */
+  saleId?: string
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

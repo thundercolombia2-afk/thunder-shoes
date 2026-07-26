@@ -87,3 +87,13 @@ export function weekdayFromDayKey(dayKey: string): string {
 
 /** Parsea lo que el usuario escribe en un campo de precio: "459.900" -> 459900 */
 export const parseMoneyInput = (raw: string): number => Number(raw.replace(/\D/g, '')) || 0
+
+/**
+ * Agrupa en miles lo que se escribe en un campo de precio, en vivo:
+ * "459900" -> "459.900". Cadena vacía si no hay dígitos (para no mostrar "0").
+ * Guarda SIEMPRE los dígitos crudos en el estado y formatea solo al pintar.
+ */
+export const formatMoneyInput = (raw: string | number): string => {
+  const digits = String(raw).replace(/\D/g, '')
+  return digits ? new Intl.NumberFormat('es-CO').format(Number(digits)) : ''
+}

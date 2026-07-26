@@ -17,16 +17,17 @@ import { authService } from '@/data/authService'
 import { DEMO } from '@/config'
 import { demoBackend } from '@/data/demoBackend'
 import type { Store, StoreId } from '@/domain/models'
-import { can as roleCan, type Capability, type UserProfile } from '@/domain/users'
+import { can as roleCan, isStoreRole, type Capability, type UserProfile } from '@/domain/users'
 import type { MovementActor } from '@/data/repositories/movementRepository'
 
 /**
  * loading   → resolviendo la sesión / el perfil
  * signedOut → sin sesión: mostrar ingreso / registro
  * noProfile → hay credencial pero no perfil (cuenta incompleta): salir
+ * disabled  → perfil existe pero la dueña lo DESACTIVÓ: no puede operar
  * ready     → perfil cargado: elegir local y operar
  */
-type Status = 'loading' | 'signedOut' | 'noProfile' | 'ready'
+type Status = 'loading' | 'signedOut' | 'noProfile' | 'disabled' | 'ready'
 
 interface SessionValue {
   status: Status
@@ -71,6 +72,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
           const profile = await authService.loadProfile(fbUser.uid)
           if (cancelled) return
           if (profile) {
+            // Cuenta desactivada por la dueña: tiene credencial y perfil, pero no
+            // se le deja operar. Se queda en la pantalla de "cuenta desactivada".
+            if (profile.active === false) {
+              setUser(null)
+              setStatus('disabled')
+              return
+            }
             setUser(profile)
             setStatus('ready')
             return
@@ -121,9 +129,12 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const actor = useMemo<MovementActor | null>(() => {
-    if (!user || !store) return null
+    if (!user) return null
+    // Los roles de venta necesitan un local; el bodeguero opera sin él (sus
+    // movimientos son salidas/retornos, cuyo lugar va en from/to).
+    if (isStoreRole(user.role) && !store) return null
     return {
-      storeId: store.id as StoreId,
+      storeId: (store?.id ?? '') as StoreId,
       userId: user.id,
       userName: user.name,
     }

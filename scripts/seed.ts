@@ -30,7 +30,8 @@ import {
 } from 'firebase/firestore'
 import { getAuth, signInWithEmailAndPassword } from 'firebase/auth'
 import { money, SIZES, type Size } from '../src/domain/models'
-import { buildBarcode, buildSearchTokens } from '../src/domain/rules'
+import { buildBarcode } from '../src/domain/rules'
+import { bodegaKey } from '../src/domain/locations'
 
 // ── Cargar .env manualmente (esto corre en Node, no en Vite) ─────────────────
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -121,8 +122,10 @@ async function main() {
   const email = need('SEED_EMAIL')
   const password = need('SEED_PASSWORD')
   console.log(`→ Entrando como ${email}…`)
+  let seedUid = ''
   try {
-    await signInWithEmailAndPassword(getAuth(app), email, password)
+    const cred = await signInWithEmailAndPassword(getAuth(app), email, password)
+    seedUid = cred.user.uid
   } catch {
     console.error(
       '\n✗ No se pudo entrar. Regístrate primero en la app (serás socio dueño) y pon ese\n' +
@@ -154,6 +157,25 @@ async function main() {
     writes++
   }
 
+  // Bodega inicial: el stock de apertura entra aquí. Los locales arrancan en 0 y
+  // se surten con salidas de bodega. El socio que siembra queda autorizado.
+  const bodegaRef = doc(collection(db, 'bodegas'))
+  const bodegaId = bodegaRef.id
+  batch.set(bodegaRef, {
+    code: 'Bodega 1',
+    name: 'Bodega principal',
+    active: true,
+    authorizedUserIds: seedUid ? [seedUid] : [],
+    createdAt: now,
+  })
+  ops++
+  writes++
+
+  // Contraseña compartida de ingreso de mercancía (cámbiala en Configuración).
+  batch.set(doc(db, 'system', 'config'), { entryPassword: '1234', updatedAt: now })
+  ops++
+  writes++
+
   // Catálogo
   for (const [brand, name, sku, price] of PRODUCTS) {
     const productRef = doc(collection(db, 'products'))
@@ -169,7 +191,6 @@ async function main() {
       cost: money(cost),
       minStock,
       active: true,
-      searchTokens: buildSearchTokens(name, brand, sku),
       createdAt: now,
       updatedAt: now,
     })
@@ -187,6 +208,8 @@ async function main() {
         size,
         barcode,
         stock,
+        // Todo el stock de apertura vive en la bodega inicial.
+        stockByLocation: stock ? { [bodegaKey(bodegaId)]: stock } : {},
         minStock,
         active: true,
         updatedAt: now,

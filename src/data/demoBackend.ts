@@ -10,6 +10,8 @@
 import {
   money,
   SIZES,
+  type Bodega,
+  type BodegaId,
   type DailyStats,
   type LowStockAlert,
   type Movement,
@@ -17,6 +19,7 @@ import {
   type MovementType,
   type Product,
   type ProductId,
+  type SaleMeta,
   type Size,
   type Store,
   type StoreId,
@@ -29,13 +32,15 @@ import {
   DomainError,
   assertMovementIsValid,
   buildBarcode,
-  buildSearchTokens,
   calculateMovement,
+  locationDeltas,
 } from '@/domain/rules'
 import type { Invite, Role, UserProfile } from '@/domain/users'
+import { bodegaKey, storeKey } from '@/domain/locations'
 import { recentDayKeys, toDayKey } from '@/lib/format'
 import type { NewProductInput, ProductWithVariants } from './repositories/catalogRepository'
-import type { MovementActor, RecordedMovement } from './repositories/movementRepository'
+import { groupSales, matchesCustomer, type Sale } from '@/domain/sales'
+import type { MovementActor } from './repositories/movementRepository'
 
 // ── PRNG determinista (datos estables entre recargas) ────────────────────────
 function mulberry32(seed: number) {
@@ -80,6 +85,8 @@ const PRODUCT_DEFS: [string, string, string, number][] = [
 
 const now = new Date()
 
+const DEMO_BODEGA_ID = 'demo-bodega-1' as BodegaId
+
 // Estado mutable en memoria
 const stores: Store[] = STORE_DEFS.map((s) => ({ id: s.code as StoreId, code: s.code, name: s.name, active: true }))
 
@@ -99,18 +106,29 @@ PRODUCT_DEFS.forEach(([brand, name, sku, price], i) => {
     cost,
     minStock,
     active: true,
-    searchTokens: buildSearchTokens(name, brand, sku),
     createdAt: now,
     updatedAt: now,
   })
   for (const size of SIZES as readonly Size[]) {
     const edge = size <= 37 || size >= 44
+    const stock = edge ? ri(0, 5) : ri(2, 14)
+    // Se reparte entre la bodega demo y los dos locales, para poder probar de
+    // una tanto vender (hay stock en los locales) como sacar de bodega.
+    const inBodega = Math.round(stock * 0.4)
+    const rest = stock - inBodega
+    const in163 = Math.round(rest / 2)
+    const in173 = rest - in163
+    const stockByLocation: Record<string, number> = {}
+    if (inBodega) stockByLocation[bodegaKey(DEMO_BODEGA_ID)] = inBodega
+    if (in163) stockByLocation[storeKey('163')] = in163
+    if (in173) stockByLocation[storeKey('173')] = in173
     variants.push({
       id: `${id}:${size}` as VariantId,
       productId: id,
       size,
       barcode: buildBarcode(sku, size),
-      stock: edge ? ri(0, 5) : ri(2, 14),
+      stock,
+      stockByLocation,
       minStock,
       active: true,
       updatedAt: now,
@@ -150,7 +168,7 @@ function applyToStats(m: Movement) {
   } else if (m.type === 'purchase') {
     s.purchasesTotal = money(s.purchasesTotal + m.total)
     s.purchasesCount += 1
-  } else {
+  } else if (m.type === 'return') {
     s.returnsTotal = money(s.returnsTotal + m.total)
     s.unitsSold -= m.quantity
     s.salesByStore[m.storeId] = (s.salesByStore[m.storeId] ?? 0) - m.total
@@ -161,6 +179,14 @@ function applyToStats(m: Movement) {
 
 // Movimientos iniciales para poblar historial y dashboard
 const DEMO_NAMES = ['María G.', 'Andrés P.', 'Camila R.', 'Julián M.', 'Valeria S.']
+/** Clientes de mentira para poder probar la búsqueda de la devolución. */
+const DEMO_CUSTOMERS: [string, string, string][] = [
+  ['Juan Ávila', '3001234567', 'Efectivo'],
+  ['Laura Restrepo', '3109876543', 'Nequi'],
+  ['Carlos Mejía', '3205551122', 'Transferencia'],
+  ['Sofía Lozano', '3014447788', 'Daviplata'],
+  ['Diego Pardo', '3123334455', 'Tarjeta'],
+]
 const days7 = recentDayKeys(7)
 for (let k = 0; k < 22; k++) {
   const variant = variants[ri(0, variants.length - 1)]!
@@ -199,26 +225,47 @@ for (let k = 0; k < 22; k++) {
     occurredAt: now,
     dayKey,
   }
+  if (type === 'sale') {
+    const [customerName, customerPhone, payment] = DEMO_CUSTOMERS[k % DEMO_CUSTOMERS.length]!
+    m.saleId = `demo-s${k}`
+    m.customerName = customerName
+    m.customerPhone = customerPhone
+    m.payment = payment
+  }
   movements.push(m)
   applyToStats(m)
 }
 movements.reverse() // más recientes primero para el historial
 
-// Equipo demo
+// Equipo demo. Los roles de venta van amarrados a un local; el bodeguero no.
 const demoUser: UserProfile = {
   id: 'demo-uid' as UserId,
-  name: 'Dueño Demo',
+  name: 'Dueña Demo',
   email: 'demo@thunder.pos',
-  role: 'socio', // cámbialo a 'empleado' para previsualizar la vista de empleado
+  role: 'socio', // cámbialo a 'empleado' o 'bodeguero' para previsualizar otras vistas
+  storeId: '163' as StoreId,
+  bodegaIds: [DEMO_BODEGA_ID],
+  owner: true,
   active: true,
   createdAt: now,
 }
 const team: UserProfile[] = [
   demoUser,
-  { id: 'demo-u1' as UserId, name: 'María G.', email: 'maria@thunder.pos', role: 'empleado', active: true, createdAt: now },
-  { id: 'demo-u2' as UserId, name: 'Andrés P.', email: 'andres@thunder.pos', role: 'empleado', active: true, createdAt: now },
+  { id: 'demo-u1' as UserId, name: 'María G.', email: 'maria@thunder.pos', role: 'empleado', storeId: '163' as StoreId, active: true, createdAt: now },
+  { id: 'demo-u2' as UserId, name: 'Andrés P.', email: 'andres@thunder.pos', role: 'empleado', storeId: '173' as StoreId, active: true, createdAt: now },
+  { id: 'demo-u3' as UserId, name: 'Bruno Bodega', email: 'bruno@thunder.pos', role: 'bodeguero', bodegaIds: [DEMO_BODEGA_ID], active: true, createdAt: now },
 ]
 const invites: Invite[] = []
+
+// Bodegas demo.
+const bodegas: Bodega[] = [
+  { id: DEMO_BODEGA_ID, code: 'Bodega 1', name: 'Bodega principal', active: true, createdAt: now },
+]
+const bodegaListeners = new Set<(b: Bodega[]) => void>()
+const notifyBodegas = () => bodegaListeners.forEach((l) => l([...bodegas]))
+
+// Configuración demo: contraseña compartida para ingresar mercancía.
+const config = { entryPassword: '1234' }
 
 // ── Pub/sub del catálogo ─────────────────────────────────────────────────────
 type CatalogListener = (catalog: ProductWithVariants[]) => void
@@ -302,7 +349,6 @@ export const demoBackend = {
       cost: input.cost,
       minStock: input.minStock,
       active: true,
-      searchTokens: buildSearchTokens(input.name, input.brand, input.sku),
       createdAt: new Date(),
       updatedAt: new Date(),
     })
@@ -313,6 +359,7 @@ export const demoBackend = {
         size,
         barcode: buildBarcode(input.sku, size),
         stock: 0,
+        stockByLocation: {},
         minStock: input.minStock,
         active: true,
         updatedAt: new Date(),
@@ -322,47 +369,84 @@ export const demoBackend = {
     return Promise.resolve(id)
   },
 
-  record(draft: MovementDraft, actor: MovementActor): Promise<RecordedMovement> {
-    const variant = variants.find((v) => v.id === draft.variantId)
-    const product = variant && products.find((p) => p.id === variant.productId)
-    if (!variant || !product) return Promise.reject(new DomainError('BARCODE_NOT_FOUND', 'La referencia ya no existe'))
-
-    assertMovementIsValid(draft, variant)
-    const totals = calculateMovement(draft, product, variant)
-    variant.stock = totals.stockAfter
-    variant.updatedAt = new Date()
-
-    const occurredAt = new Date()
-    const movement: Movement = {
-      id: `demo-m${movements.length + 1000}` as Movement['id'],
-      type: draft.type,
-      productId: product.id,
-      variantId: draft.variantId,
-      snapshot: {
-        productName: product.name,
-        brand: product.brand,
-        sku: product.sku,
-        barcode: variant.barcode,
-        size: variant.size,
-        unitPrice: totals.unitPrice,
-        unitCost: totals.unitCost,
-      },
-      quantity: draft.quantity,
-      stockDelta: totals.stockDelta,
-      stockAfter: totals.stockAfter,
-      total: totals.total,
-      margin: totals.margin,
-      storeId: actor.storeId,
-      userId: actor.userId,
-      userName: actor.userName,
-      occurredAt,
-      dayKey: toDayKey(occurredAt),
+  removeVariant(productId: ProductId, size: Size): Promise<void> {
+    const i = variants.findIndex((v) => v.productId === productId && v.size === size)
+    if (i < 0) return Promise.resolve()
+    if (variants[i]!.stock !== 0) {
+      throw new DomainError('HAS_STOCK', 'No se puede quitar una talla con stock. Primero sácala del inventario.')
     }
-    if (draft.returnReason) movement.returnReason = draft.returnReason
-    movements.unshift(movement)
-    applyToStats(movement)
+    variants.splice(i, 1)
     notify()
-    return Promise.resolve({ movement, stockAfter: totals.stockAfter })
+    return Promise.resolve()
+  },
+
+  recordMany(drafts: MovementDraft[], actor: MovementActor, meta?: SaleMeta): Promise<Movement[]> {
+    const occurredAt = new Date()
+    const saleId = `demo-s${movements.length + 1000}`
+    const created: Movement[] = []
+
+    // Se valida TODO antes de tocar el stock: igual que la transacción real,
+    // el carrito entra completo o no entra.
+    const prepared = drafts.map((draft) => {
+      const variant = variants.find((v) => v.id === draft.variantId)
+      const product = variant && products.find((p) => p.id === variant.productId)
+      if (!variant || !product) throw new DomainError('BARCODE_NOT_FOUND', 'La referencia ya no existe')
+      const eff: MovementDraft = { ...draft }
+      if (draft.type === 'sale' && !eff.fromLocation) eff.fromLocation = storeKey(actor.storeId)
+      if (draft.type === 'return' && !eff.toLocation) eff.toLocation = storeKey(actor.storeId)
+      assertMovementIsValid(eff, variant)
+      return { draft, eff, variant, product, totals: calculateMovement(eff, product, variant) }
+    })
+
+    for (const [i, { draft, eff, variant, product, totals }] of prepared.entries()) {
+      variant.stock = totals.stockAfter
+      for (const { key, delta } of locationDeltas(eff)) {
+        const next = (variant.stockByLocation[key] ?? 0) + delta
+        if (next === 0) delete variant.stockByLocation[key]
+        else variant.stockByLocation[key] = next
+      }
+      variant.updatedAt = occurredAt
+
+      const movement: Movement = {
+        id: `demo-m${movements.length + 1000 + i}` as Movement['id'],
+        type: draft.type,
+        productId: product.id,
+        variantId: draft.variantId,
+        snapshot: {
+          productName: product.name,
+          brand: product.brand,
+          sku: product.sku,
+          barcode: variant.barcode,
+          size: variant.size,
+          unitPrice: totals.unitPrice,
+          unitCost: totals.unitCost,
+        },
+        quantity: draft.quantity,
+        stockDelta: totals.stockDelta,
+        stockAfter: totals.stockAfter,
+        total: totals.total,
+        margin: totals.margin,
+        storeId: actor.storeId,
+        userId: actor.userId,
+        userName: actor.userName,
+        occurredAt,
+        dayKey: toDayKey(occurredAt),
+      }
+      if (draft.returnReason) movement.returnReason = draft.returnReason
+      if (eff.fromLocation) movement.fromLocation = eff.fromLocation
+      if (eff.toLocation) movement.toLocation = eff.toLocation
+      if (drafts.length > 1) movement.saleId = saleId
+      if (meta?.payment) movement.payment = meta.payment
+      if (meta?.customerName) movement.customerName = meta.customerName
+      if (meta?.customerPhone) movement.customerPhone = meta.customerPhone
+
+      movements.unshift(movement)
+      applyToStats(movement)
+      created.push(movement)
+    }
+
+    notify()
+    return Promise.resolve(created)
   },
 
   listPage(options: { type?: MovementType } = {}): Promise<{
@@ -378,8 +462,47 @@ export const demoBackend = {
     return Promise.resolve(movements.filter((m) => m.dayKey >= fromDayKey && m.dayKey <= toDayKey_))
   },
 
+  searchSales(needle: string, max: number): Promise<Sale[]> {
+    const ids: string[] = []
+    for (const m of movements) {
+      if (m.type !== 'sale') continue
+      const id = m.saleId ?? m.id
+      if (ids.includes(id)) continue
+      if (matchesCustomer(m, needle)) ids.push(id)
+      if (ids.length >= max) break
+    }
+    const related = movements.filter((m) => ids.includes(m.saleId ?? m.id))
+    return Promise.resolve(
+      groupSales(related).sort((a, b) => b.occurredAt.getTime() - a.occurredAt.getTime()),
+    )
+  },
+
+  searchSalesByVariant(variantId: string, max: number): Promise<Sale[]> {
+    const ids: string[] = []
+    for (const m of movements) {
+      if (m.type !== 'sale') continue
+      if (String(m.variantId) !== String(variantId)) continue
+      const id = m.saleId ?? m.id
+      if (ids.includes(id)) continue
+      ids.push(id)
+      if (ids.length >= max) break
+    }
+    const related = movements.filter((m) => ids.includes(m.saleId ?? m.id))
+    return Promise.resolve(
+      groupSales(related).sort((a, b) => b.occurredAt.getTime() - a.occurredAt.getTime()),
+    )
+  },
+
+  listBySaleIds(saleIds: string[]): Promise<Movement[]> {
+    return Promise.resolve(movements.filter((m) => saleIds.includes(m.saleId ?? m.id)))
+  },
+
   getById(id: string): Promise<Movement | null> {
     return Promise.resolve(movements.find((m) => m.id === id) ?? null)
+  },
+
+  listRecent(max: number): Promise<Movement[]> {
+    return Promise.resolve(movements.slice(0, max))
   },
 
   listRecentDays(days: number): Promise<DailyStats[]> {
@@ -394,22 +517,85 @@ export const demoBackend = {
   listInvites(): Promise<Invite[]> {
     return Promise.resolve([...invites])
   },
-  createInvite(role: Role, creator: { id: UserId; name: string }): Promise<Invite> {
+  createInvite(
+    input: { role: Role; storeId?: string; bodegaId?: string },
+    creator: { id: UserId; name: string },
+  ): Promise<Invite> {
     const invite: Invite = {
       code: `THR-DEMO${invites.length + 1}`,
-      role,
+      role: input.role,
       createdBy: creator.id,
       createdByName: creator.name,
       active: true,
       createdAt: new Date(),
     }
+    if (input.storeId) invite.storeId = input.storeId
+    if (input.bodegaId) invite.bodegaId = input.bodegaId
     invites.unshift(invite)
     return Promise.resolve(invite)
+  },
+  setUserRole(uid: string, role: Role): Promise<void> {
+    const u = team.find((x) => x.id === uid)
+    if (u) u.role = role
+    return Promise.resolve()
+  },
+  setUserStore(uid: string, storeId: string): Promise<void> {
+    const u = team.find((x) => x.id === uid)
+    if (u) {
+      if (storeId) u.storeId = storeId as StoreId
+      else delete u.storeId
+    }
+    return Promise.resolve()
+  },
+  setUserBodegas(uid: string, bodegaIds: string[]): Promise<void> {
+    const u = team.find((x) => x.id === uid)
+    if (u) u.bodegaIds = bodegaIds
+    return Promise.resolve()
+  },
+  setUserActive(uid: string, active: boolean): Promise<void> {
+    const u = team.find((x) => x.id === uid)
+    if (u) u.active = active
+    return Promise.resolve()
+  },
+
+  // Bodegas
+  listBodegas(): Promise<Bodega[]> {
+    return Promise.resolve([...bodegas])
+  },
+  subscribeBodegas(onChange: (b: Bodega[]) => void): () => void {
+    bodegaListeners.add(onChange)
+    onChange([...bodegas])
+    return () => bodegaListeners.delete(onChange)
+  },
+  createBodega(input: { code: string; name: string }): Promise<BodegaId> {
+    const id = `demo-bodega-${bodegas.length + 1}` as BodegaId
+    bodegas.push({
+      id,
+      code: input.code.trim(),
+      name: input.name.trim() || input.code.trim(),
+      active: true,
+      createdAt: new Date(),
+    })
+    notifyBodegas()
+    return Promise.resolve(id)
+  },
+
+  // Configuración
+  getEntryPassword(): Promise<string> {
+    return Promise.resolve(config.entryPassword)
+  },
+  setEntryPassword(password: string): Promise<void> {
+    config.entryPassword = password
+    return Promise.resolve()
   },
 
   // Perfil
   updateName(name: string): Promise<void> {
     demoUser.name = name.trim()
+    return Promise.resolve()
+  },
+  bindStore(storeId: string): Promise<void> {
+    demoUser.storeId = storeId as StoreId
     return Promise.resolve()
   },
   loadProfile(): Promise<UserProfile> {

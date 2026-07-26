@@ -13,7 +13,7 @@ import { Icon } from '@/ui/Icon'
 
 type Mode = 'login' | 'register'
 
-export function AuthScreen({ incompleteAccount = false }: { incompleteAccount?: boolean }) {
+export function AuthScreen({ incompleteAccount = false, disabledAccount = false }: { incompleteAccount?: boolean; disabledAccount?: boolean }) {
   const [mode, setMode] = useState<Mode>('login')
   const [bootstrap, setBootstrap] = useState<boolean | null>(null)
   const [name, setName] = useState('')
@@ -84,6 +84,23 @@ export function AuthScreen({ incompleteAccount = false }: { incompleteAccount?: 
     )
   }
 
+  if (disabledAccount) {
+    return (
+      <Shell>
+        <Card>
+          <h1 style={{ margin: 0, font: '700 22px var(--font-display)' }}>Cuenta desactivada</h1>
+          <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: 14, lineHeight: 1.5 }}>
+            Tu cuenta fue desactivada y no puedes ingresar. Si crees que es un error, comunícate con
+            la dueña del negocio.
+          </p>
+          <Button variant="primary" fullWidth onClick={() => void authService.logout()}>
+            Salir
+          </Button>
+        </Card>
+      </Shell>
+    )
+  }
+
   const canSubmit =
     email.trim() &&
     password &&
@@ -121,7 +138,7 @@ export function AuthScreen({ incompleteAccount = false }: { incompleteAccount?: 
           <Field label="Correo" type="email" placeholder="tucorreo@ejemplo.com" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" />
           <Field label="Contraseña" type="password" placeholder="••••••" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete={mode === 'login' ? 'current-password' : 'new-password'} />
           {mode === 'register' && bootstrap === false ? (
-            <Field label="Código de invitación" placeholder="THR-XXXX" value={invite} onChange={(e) => setInvite(e.target.value.toUpperCase())} hint="Te lo envía un socio." />
+            <Field label="Código de invitación" placeholder="THR-XXXX" value={invite} onChange={(e) => setInvite(e.target.value.toUpperCase())} hint="Te lo envía la dueña. Ya trae tu rol y tu local o bodega." />
           ) : null}
 
           {error ? (

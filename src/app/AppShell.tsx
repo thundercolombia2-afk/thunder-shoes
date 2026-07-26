@@ -10,22 +10,26 @@ import { useSession } from './session'
 import { useIsMobile } from './useMediaQuery'
 import { ScanningOverlay } from './ScanningOverlay'
 import { Icon, type IconName } from '@/ui/Icon'
-import { ROLE_LABEL } from '@/domain/users'
+import { isStoreRole, ROLE_LABEL, type Role } from '@/domain/users'
 
 interface NavEntry {
   to: string
   label: string
   icon: IconName
   match: string[]
-  socioOnly?: boolean
+  /** Si se define, solo estos roles ven la entrada. */
+  roles?: Role[]
+  /** Solo la dueña la ve (para no filtrar la contraseña de Configuración). */
+  ownerOnly?: boolean
 }
 
 const NAV: NavEntry[] = [
   { to: '/scan', label: 'Escanear', icon: 'scan', match: ['/scan'] },
   { to: '/inventory', label: 'Inventario', icon: 'box', match: ['/inventory'] },
-  { to: '/history', label: 'Historial', icon: 'list', match: ['/history'] },
-  { to: '/dashboard', label: 'Dashboard', icon: 'chart', match: ['/dashboard'] },
-  { to: '/team', label: 'Equipo', icon: 'user', match: ['/team'], socioOnly: true },
+  { to: '/locales', label: 'Locales', icon: 'store', match: ['/locales'], roles: ['socio', 'empleado'] },
+  { to: '/history', label: 'Historial', icon: 'list', match: ['/history'], roles: ['socio', 'empleado'] },
+  { to: '/dashboard', label: 'Ingresos y egresos', icon: 'chart', match: ['/dashboard'], roles: ['socio', 'empleado'] },
+  { to: '/settings', label: 'Configuración', icon: 'settings', match: ['/settings'], ownerOnly: true },
 ]
 
 function initials(name: string): string {
@@ -38,19 +42,24 @@ function initials(name: string): string {
 }
 
 export function AppShell() {
-  const { store, user, clearStore, logout, can } = useSession()
+  const { store, user, clearStore, logout } = useSession()
   const isMobile = useIsMobile()
   const location = useLocation()
   const navigate = useNavigate()
 
-  if (!store || !user) return <Navigate to="/" replace />
+  if (!user) return <Navigate to="/" replace />
+  // Los roles de venta necesitan un local; el bodeguero entra sin él.
+  if (isStoreRole(user.role) && !store) return <Navigate to="/" replace />
 
-  const items = NAV.filter((n) => !n.socioOnly || can('manageTeam'))
+  const items = NAV.filter((n) => (!n.roles || n.roles.includes(user.role)) && (!n.ownerOnly || user.owner))
   const activeKey = items.find((n) => n.match.some((m) => location.pathname.startsWith(m)))?.to
 
+  // Solo la dueña cambia de local desde aquí; el ?cambiar=1 le dice al selector
+  // que muestre las opciones en vez de reentrar al local ya amarrado.
+  const canChangeStore = user.owner === true
   const changeStore = () => {
     clearStore()
-    navigate('/')
+    navigate('/?cambiar=1')
   }
   const onLogout = () => {
     void logout()
@@ -62,21 +71,23 @@ export function AppShell() {
     <div style={{ height: '100vh', overflow: 'hidden', background: 'var(--iw-plum-dark)', display: 'flex' }}>
       {isMobile ? (
         <MobileShell
-          storeCode={store.code}
+          storeCode={store?.code ?? ''}
           userName={user.name}
           items={items}
           activeKey={activeKey}
+          canChangeStore={canChangeStore}
           onChangeStore={changeStore}
           onLogout={onLogout}
           onOpenProfile={openProfile}
         />
       ) : (
         <DesktopShell
-          storeCode={store.code}
+          storeCode={store?.code ?? ''}
           userName={user.name}
           roleLabel={ROLE_LABEL[user.role]}
           items={items}
           activeKey={activeKey}
+          canChangeStore={canChangeStore}
           onChangeStore={changeStore}
           onLogout={onLogout}
           onOpenProfile={openProfile}
@@ -94,6 +105,7 @@ function MobileShell({
   userName,
   items,
   activeKey,
+  canChangeStore,
   onChangeStore,
   onLogout,
   onOpenProfile,
@@ -102,6 +114,7 @@ function MobileShell({
   userName: string
   items: NavEntry[]
   activeKey: string | undefined
+  canChangeStore: boolean
   onChangeStore: () => void
   onLogout: () => void
   onOpenProfile: () => void
@@ -141,10 +154,12 @@ function MobileShell({
           <span style={{ font: '700 13px var(--font-display)', color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
             {userName}
           </span>
-          <span style={{ fontSize: 10, color: 'var(--iw-cream)', opacity: 0.55, fontWeight: 600 }}>Local {storeCode} · ver perfil</span>
+          <span style={{ fontSize: 10, color: 'var(--iw-cream)', opacity: 0.55, fontWeight: 600 }}>
+            {storeCode ? `Local ${storeCode}` : 'Bodeguero'} · ver perfil
+          </span>
         </button>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 12 }}>
-          <HeaderAction icon="refresh" label="Cambiar" onClick={onChangeStore} />
+          {canChangeStore ? <HeaderAction icon="refresh" label="Local" onClick={onChangeStore} /> : null}
           <HeaderAction icon="return" label="Salir" onClick={onLogout} />
         </div>
       </header>
@@ -195,6 +210,7 @@ function DesktopShell({
   roleLabel,
   items,
   activeKey,
+  canChangeStore,
   onChangeStore,
   onLogout,
   onOpenProfile,
@@ -204,6 +220,7 @@ function DesktopShell({
   roleLabel: string
   items: NavEntry[]
   activeKey: string | undefined
+  canChangeStore: boolean
   onChangeStore: () => void
   onLogout: () => void
   onOpenProfile: () => void
@@ -217,7 +234,7 @@ function DesktopShell({
           </div>
           <div>
             <div style={{ font: '700 16px var(--font-display)', color: '#fff', letterSpacing: '.1em' }}>THUNDER</div>
-            <div style={{ fontSize: 11, color: 'var(--iw-cream)', opacity: 0.6 }}>Local {storeCode}</div>
+            <div style={{ fontSize: 11, color: 'var(--iw-cream)', opacity: 0.6 }}>{storeCode ? `Local ${storeCode}` : 'Bodeguero'}</div>
           </div>
         </div>
 
@@ -265,7 +282,7 @@ function DesktopShell({
             </div>
           </button>
           <div style={{ display: 'flex', gap: 8 }}>
-            <SidebarButton icon="refresh" label="Local" onClick={onChangeStore} />
+            {canChangeStore ? <SidebarButton icon="refresh" label="Local" onClick={onChangeStore} /> : null}
             <SidebarButton icon="return" label="Salir" onClick={onLogout} />
           </div>
         </div>

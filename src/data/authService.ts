@@ -26,7 +26,7 @@ import { inviteRef, systemStateRef, userRef, usersRef } from './paths'
 import { userFromDoc } from './converters'
 import { DEMO } from '@/config'
 import { demoBackend } from './demoBackend'
-import type { Role, UserProfile } from '@/domain/users'
+import { isStoreRole, type Role, type UserProfile } from '@/domain/users'
 
 /** Traduce códigos de Firebase Auth a español. */
 function authErrorMessage(error: unknown): string {
@@ -155,7 +155,7 @@ export const authService = {
             throw new Error('La plataforma ya tiene dueño. Pide una invitación.')
           }
           tx.set(systemStateRef(), { bootstrapped: true, ownerUid: user.uid, createdAt: now })
-          tx.set(userRef(user.uid), profileDoc(name, input.email, 'socio', now))
+          tx.set(userRef(user.uid), profileDoc(name, input.email, 'socio', now, { owner: true }))
           return { role: 'socio' as Role, now }
         }
 
@@ -165,9 +165,18 @@ export const authService = {
         if (!inviteSnap.exists() || inviteSnap.data().active !== true) {
           throw new Error('La invitación no existe o ya fue usada.')
         }
-        const role = inviteSnap.data().role as Role
+        const data = inviteSnap.data()
+        const role = data.role as Role
         tx.update(inviteRef(code), { active: false, usedBy: user.uid, usedAt: now })
-        tx.set(userRef(user.uid), { ...profileDoc(name, input.email, role, now), inviteCode: code })
+        // La asignación la trae la INVITACIÓN (la fijó la dueña): local para los
+        // roles de venta, bodega para el bodeguero. El que se registra no elige.
+        const opts: { storeId?: string; bodegaIds?: string[] } = {}
+        if (isStoreRole(role) && data.storeId) opts.storeId = String(data.storeId)
+        if (role === 'bodeguero' && data.bodegaId) opts.bodegaIds = [String(data.bodegaId)]
+        tx.set(userRef(user.uid), {
+          ...profileDoc(name, input.email, role, now, opts),
+          inviteCode: code,
+        })
         return { role, now }
       })
 
@@ -188,6 +197,18 @@ export const authService = {
         code?.startsWith('auth/') ? authErrorMessage(e) : (e as Error).message || 'No se pudo registrar.',
       )
     }
+  },
+
+  /**
+   * Amarra al usuario a un local por primera vez (solo si aún no tiene uno).
+   * Lo usa el socio dueño del arranque, que se registró antes de que existieran
+   * los locales: elige el suyo una vez y queda fijo.
+   */
+  async bindStore(storeId: string): Promise<void> {
+    if (DEMO) return demoBackend.bindStore(storeId)
+    const user = auth.currentUser
+    if (!user) throw new Error('Sesión no válida.')
+    await updateDoc(userRef(user.uid), { storeId })
   },
 
   /** Lee el perfil (rol) de un usuario ya autenticado. */
@@ -212,12 +233,13 @@ export const authService = {
         const name = (user.displayName || user.email?.split('@')[0] || 'Socio').trim()
         const email = user.email ?? ''
         tx.set(systemStateRef(), { bootstrapped: true, ownerUid: user.uid, createdAt: now })
-        tx.set(userRef(user.uid), profileDoc(name, email, 'socio', now))
+        tx.set(userRef(user.uid), profileDoc(name, email, 'socio', now, { owner: true }))
         return {
           id: user.uid as UserProfile['id'],
           name,
           email,
           role: 'socio' as Role,
+          owner: true,
           active: true,
           createdAt: now.toDate(),
         }
@@ -234,6 +256,25 @@ export const authService = {
   },
 }
 
-function profileDoc(name: string, email: string, role: Role, now: Timestamp) {
-  return { name, email: email.trim(), role, active: true, createdAt: now }
+function profileDoc(
+  name: string,
+  email: string,
+  role: Role,
+  now: Timestamp,
+  opts: { storeId?: string; bodegaIds?: string[]; owner?: boolean } = {},
+) {
+  const doc: {
+    name: string
+    email: string
+    role: Role
+    active: boolean
+    createdAt: Timestamp
+    storeId?: string
+    bodegaIds?: string[]
+    owner?: boolean
+  } = { name, email: email.trim(), role, active: true, createdAt: now }
+  if (opts.storeId) doc.storeId = opts.storeId
+  if (opts.bodegaIds && opts.bodegaIds.length) doc.bodegaIds = opts.bodegaIds
+  if (opts.owner) doc.owner = true
+  return doc
 }

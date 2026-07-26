@@ -15,8 +15,8 @@ export function AuthGate({ children }: { children: ReactNode }) {
 
   if (status === 'ready') return <>{children}</>
   if (status === 'loading') return <Splash />
-  // signedOut | noProfile
-  return <AuthScreen incompleteAccount={status === 'noProfile'} />
+  // signedOut | noProfile | disabled
+  return <AuthScreen incompleteAccount={status === 'noProfile'} disabledAccount={status === 'disabled'} />
 }
 
 function Splash() {

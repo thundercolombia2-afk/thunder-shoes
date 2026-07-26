@@ -107,6 +107,42 @@ panel del servicio.
 
 ---
 
+## Códigos de barras: crearlos, escanearlos e imprimirlos
+
+**Los códigos los crea la app, no se compran.** Al guardar una referencia en
+*Inventario → Crear referencia*, cada talla recibe su propio código con el
+formato `SKU-TALLA` (por ejemplo `AM90-BLK-40`). Es único por talla a propósito:
+así el stock baja en la talla correcta y no en "el modelo".
+
+**Imprimirlos en sticker.** En esa misma pantalla, el botón **Imprimir
+etiquetas** abre una hoja lista para imprimir, con una etiqueta de **50 × 25 mm**
+por cada talla seleccionada (y tantas copias por talla como pongas en *Stickers
+por talla*). Sirven dos caminos:
+
+- **Impresora térmica de etiquetas** (Zebra, Xprinter, Brother QL y similares,
+  desde ~$300.000): se carga el rollo de 50 × 25 mm y se imprime directo. Es lo
+  recomendable si etiquetas todos los días.
+- **Impresora normal + hoja A4 de stickers adhesivos**: se imprime la hoja y se
+  recortan. Cero inversión, más trabajo manual.
+
+En el diálogo de impresión hay que dejar la escala en **100 %** (no "ajustar a la
+página") para que los milímetros salgan exactos.
+
+**Escanearlos.** Hay tres formas, y todas terminan en el mismo campo de la
+pantalla *Escanea producto*:
+
+1. **Lector USB** (~$100.000). Es lo que usa una caja de verdad: se conecta al
+   computador, se comporta como un teclado y "escribe" el código en el campo y
+   manda Enter. No hay que instalar nada ni configurar la app.
+2. **Cámara del celular.** El botón **Cámara** abre la cámara trasera y lee la
+   etiqueta. Usa `BarcodeDetector`, el lector que trae el propio navegador:
+   funciona en **Chrome de Android** y en Chrome/Edge de escritorio, pero **no en
+   Safari de iPhone**, que todavía no lo trae. Si el navegador no lo soporta, el
+   botón no aparece. Además exige **HTTPS** — el hosting de Firebase ya lo es.
+3. **A mano**, escribiendo el código o buscando por nombre de la referencia.
+
+---
+
 ## Scripts
 
 | Comando              | Qué hace                                                        |

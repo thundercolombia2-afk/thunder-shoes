@@ -1,16 +1,19 @@
 /**
  * Personas y permisos. Modelo puro: sin React ni Firebase.
  *
- * Hay dos roles. La diferencia NO es "quién puede operar" (ambos venden,
- * devuelven, reciben mercancía y cuadran), sino:
- *   · el socio VE costos y utilidad, y GESTIONA el equipo (invita gente);
- *   · el empleado NO ve costos ni utilidad, y NO puede invitar a nadie —
- *     así ningún empleado puede ascenderse ni ascender a otro a socio.
+ * Tres roles:
+ *   · socio    — VE costos y utilidad, GESTIONA el equipo y la configuración,
+ *                vende y opera bodegas. Amarrado a un local.
+ *   · empleado — vende, devuelve, recibe mercancía y crea referencias. NO ve
+ *                costos ni gestiona equipo. Amarrado a un local.
+ *   · bodeguero — SOLO opera bodegas (salidas/retornos donde esté autorizado) y
+ *                crea referencias. Ve costos. NO vende ni queda amarrado a un
+ *                local.
  */
 
-import type { UserId } from './models'
+import type { StoreId, UserId } from './models'
 
-export const ROLES = ['socio', 'empleado'] as const
+export const ROLES = ['socio', 'empleado', 'bodeguero'] as const
 export type Role = (typeof ROLES)[number]
 
 export const isRole = (value: unknown): value is Role =>
@@ -19,7 +22,11 @@ export const isRole = (value: unknown): value is Role =>
 export const ROLE_LABEL: Record<Role, string> = {
   socio: 'Socio',
   empleado: 'Empleado',
+  bodeguero: 'Bodeguero',
 }
+
+/** Roles que operan en un local (venden). El bodeguero no. */
+export const isStoreRole = (role: Role): boolean => role === 'socio' || role === 'empleado'
 
 /** Perfil de una persona. El rol vive aquí (en la base), nunca en el cliente. */
 export interface UserProfile {
@@ -27,6 +34,12 @@ export interface UserProfile {
   name: string
   email: string
   role: Role
+  /** Local al que pertenece. Los de venta lo tienen; el bodeguero no. */
+  storeId?: StoreId
+  /** Bodegas que este usuario puede operar (salidas/retornos). */
+  bodegaIds?: string[]
+  /** `true` solo para la dueña (la primera cuenta). Ve Configuración. */
+  owner?: boolean
   active: boolean
   createdAt: Date
 }
@@ -38,6 +51,9 @@ export interface UserProfile {
 export interface Invite {
   code: string
   role: Role
+  /** Asignación que la dueña fija al crear el código: */
+  storeId?: string // local (socio/empleado)
+  bodegaId?: string // bodega (bodeguero)
   createdBy: UserId
   createdByName: string
   active: boolean
@@ -51,15 +67,17 @@ export interface Invite {
 
 export type Capability =
   | 'sell' // vender / devolver
-  | 'receiveStock' // registrar compras / recepción de mercancía
+  | 'receiveStock' // registrar entradas / recepción de mercancía
   | 'countStock' // conteo físico / cuadre
   | 'createReference' // crear referencias nuevas
   | 'seeCosts' // ver costo y utilidad
-  | 'manageTeam' // invitar personas, ver el equipo
+  | 'manageTeam' // invitar personas, gestionar configuración
+  | 'operateBodega' // hacer salidas / retornos en bodegas autorizadas
 
 const CAPABILITIES: Record<Role, readonly Capability[]> = {
-  socio: ['sell', 'receiveStock', 'countStock', 'createReference', 'seeCosts', 'manageTeam'],
+  socio: ['sell', 'receiveStock', 'countStock', 'createReference', 'seeCosts', 'manageTeam', 'operateBodega'],
   empleado: ['sell', 'receiveStock', 'countStock', 'createReference'],
+  bodeguero: ['createReference', 'seeCosts', 'operateBodega'],
 }
 
 /** ¿El rol tiene permitido `capability`? Única fuente de verdad de permisos. */

@@ -25,6 +25,8 @@ const TONE: Record<MovementType, string> = {
   sale: 'var(--iw-orange)',
   purchase: 'var(--iw-plum)',
   return: 'var(--color-danger)',
+  salida: 'var(--iw-amber)',
+  retorno: 'var(--color-success)',
 }
 
 export function HistoryScreen() {
@@ -57,7 +59,10 @@ export function HistoryScreen() {
       // Exporta el último mes desde el servidor, no solo lo que está en pantalla.
       const keys = recentDayKeys(31)
       const all = await movementRepository.listForExport(keys[0]!, keys.at(-1)!)
-      const headers = ['Fecha', 'Tipo', 'Referencia', 'Codigo', 'Talla', 'Cantidad', 'Local', 'Usuario', 'Total', 'Utilidad']
+      const headers = [
+        'Fecha', 'Tipo', 'Referencia', 'Codigo', 'Talla', 'Cantidad', 'Local', 'Usuario',
+        'Cliente', 'Telefono', 'Pago', 'Venta', 'Total', 'Utilidad',
+      ]
       const data = all.map((m) => [
         formatShortDate(m.occurredAt),
         MOVEMENT_LABEL[m.type],
@@ -67,6 +72,11 @@ export function HistoryScreen() {
         m.quantity,
         m.storeId,
         m.userName,
+        m.customerName ?? '',
+        m.customerPhone ?? '',
+        m.payment ?? '',
+        // El id de venta permite reagrupar en Excel las líneas de un tiquete.
+        m.saleId ?? m.id,
         m.total,
         seeCosts ? m.margin : '',
       ])
@@ -225,8 +235,32 @@ function HistoryRow({ movement: m, admin }: { movement: Movement; admin: boolean
       >
         {MOVEMENT_LABEL[m.type]}
       </span>
-      <span style={{ fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-        {m.snapshot.productName}
+      <span style={{ minWidth: 0 }}>
+        <span
+          style={{
+            display: 'block',
+            fontWeight: 600,
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+          }}
+        >
+          {m.snapshot.productName}
+        </span>
+        {m.customerName || m.payment ? (
+          <span
+            style={{
+              display: 'block',
+              fontSize: 11,
+              color: 'var(--text-muted)',
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}
+          >
+            {[m.customerName, m.payment].filter(Boolean).join(' · ')}
+          </span>
+        ) : null}
       </span>
       <span>{m.snapshot.size}</span>
       <span style={{ fontWeight: 700, color: qtyColor }}>{signedQuantity(m)}</span>

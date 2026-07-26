@@ -37,6 +37,12 @@ service cloud.firestore {
       return hasProfile()
         && get(/databases/$(database)/documents/users/$(uid())).data.role == 'socio';
     }
+    // La DUEÑA: la primera cuenta. Solo ella ve/gestiona Configuración (para que
+    // no se filtre la contraseña) y puede editar los perfiles del equipo.
+    function isOwner() {
+      return hasProfile()
+        && get(/databases/$(database)/documents/users/$(uid())).data.get('owner', false) == true;
+    }
 
     // ── Centinela de arranque ─────────────────────────────────────────────────
     // Lectura pública: solo dice si ya hay dueño, sin datos sensibles. Así la
@@ -55,15 +61,37 @@ service cloud.firestore {
       // Crear tu propio perfil: o eres el arranque (primer socio) o traes una
       // invitación válida cuyo rol coincide con el que te asignas.
       allow create: if uid() == userId
-        && request.resource.data.role in ['socio', 'empleado']
-        && (isBootstrapCreate() || hasValidInvite(request.resource.data));
+        && request.resource.data.role in ['socio', 'empleado', 'bodeguero']
+        && (
+          isBootstrapCreate()
+          || (hasValidInvite(request.resource.data)
+              && request.resource.data.get('owner', false) == false)
+        );
 
-      // Cada quien edita su propio perfil (nombre, etc.), pero NUNCA su rol,
-      // su correo ni su fecha de alta: eso evita autoascensos.
-      allow update: if uid() == userId
-        && request.resource.data.role == resource.data.role
-        && request.resource.data.email == resource.data.email
-        && request.resource.data.createdAt == resource.data.createdAt;
+      // Actualización:
+      //  · la DUEÑA edita rol/local/bodegas/nombre de CUALQUIERA (no el correo,
+      //    la fecha ni la marca de dueña);
+      //  · cualquier otra persona solo edita su propio NOMBRE (nada de rol,
+      //    local, bodegas o dueña) — así nadie se autoasciende ni se reasigna.
+      allow update: if
+        (isOwner()
+          && request.resource.data.email == resource.data.email
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.get('owner', false) == resource.data.get('owner', false))
+        || (uid() == userId
+          && request.resource.data.role == resource.data.role
+          && request.resource.data.get('storeId', '') == resource.data.get('storeId', '')
+          && request.resource.data.get('bodegaIds', []) == resource.data.get('bodegaIds', [])
+          && request.resource.data.get('owner', false) == resource.data.get('owner', false)
+          && request.resource.data.get('active', true) == resource.data.get('active', true)
+          && request.resource.data.email == resource.data.email
+          && request.resource.data.createdAt == resource.data.createdAt)
+        // La dueña REAL del arranque (la de system/state) puede editar su propio
+        // perfil sin restricción: sirve para "sanar" la marca de dueña en cuentas
+        // creadas antes de que existiera.
+        || (uid() == userId
+          && exists(/databases/$(database)/documents/system/state)
+          && get(/databases/$(database)/documents/system/state).data.get('ownerUid', '') == uid());
 
       allow delete: if false;
     }
@@ -83,9 +111,9 @@ service cloud.firestore {
     match /invites/{code} {
       allow read: if signedIn();
 
-      // Solo un socio genera invitaciones, y solo activas y a su nombre.
-      allow create: if isSocio()
-        && request.resource.data.role in ['socio', 'empleado']
+      // Solo la DUEÑA genera invitaciones, y solo activas y a su nombre.
+      allow create: if isOwner()
+        && request.resource.data.role in ['socio', 'empleado', 'bodeguero']
         && request.resource.data.active == true
         && request.resource.data.createdBy == uid();
 
@@ -99,15 +127,39 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // ── Configuración global (contraseña de ingreso) ──────────────────────────
+    // Lectura para operar (verificar la contraseña); escritura solo la dueña.
+    match /system/config {
+      allow read: if hasProfile();
+      allow write: if isOwner();
+    }
+
+    // ── Bodegas: las administra la dueña; cualquiera con perfil las lee ────────
+    match /bodegas/{bodegaId} {
+      allow read: if hasProfile();
+      allow write: if isOwner();
+    }
+
     // ── Catálogo, locales y agregados: cualquier persona con perfil opera ──────
+    // Los locales se LEEN sin sesión: el registro muestra la lista para que la
+    // persona elija el suyo (aún no tiene cuenta). No hay dato sensible en un
+    // código y nombre de local. Escribir sí exige perfil.
     match /stores/{storeId} {
-      allow read, write: if hasProfile();
+      allow read: if true;
+      allow write: if hasProfile();
     }
     match /products/{productId} {
       allow read, write: if hasProfile();
       match /variants/{size} {
         allow read, write: if hasProfile();
       }
+    }
+    // El inventario en vivo y las alertas leen las tallas con una CONSULTA DE
+    // GRUPO DE COLECCIÓN (collectionGroup('variants')). Firestore exige una regla
+    // en forma `{path=**}/variants/{...}` para permitirla; sin esto la consulta
+    // se rechaza y el catálogo nunca carga.
+    match /{path=**}/variants/{variantId} {
+      allow read: if hasProfile();
     }
     match /barcodes/{barcode} {
       allow read, write: if hasProfile();
@@ -126,7 +178,7 @@ service cloud.firestore {
     }
 
     function isValidMovement(m) {
-      return m.type in ['sale', 'purchase', 'return']
+      return m.type in ['sale', 'purchase', 'return', 'salida', 'retorno']
         && m.quantity is int && m.quantity >= 1
         && m.productId is string
         && m.variantId is string

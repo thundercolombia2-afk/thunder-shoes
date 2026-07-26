@@ -42,7 +42,7 @@ import {
   type VariantId,
   type VariantWithProduct,
 } from '@/domain/models'
-import { DomainError, buildBarcode, buildSearchTokens } from '@/domain/rules'
+import { DomainError, buildBarcode } from '@/domain/rules'
 import { DEMO } from '@/config'
 import { demoBackend } from '../demoBackend'
 
@@ -71,7 +71,10 @@ export const catalogRepository = {
    * Trae productos y variantes en dos escuchas y las une en memoria: son
    * decenas de referencias, no miles, y evita N+1 suscripciones.
    */
-  subscribeToCatalog(onChange: (catalog: ProductWithVariants[]) => void): Unsubscribe {
+  subscribeToCatalog(
+    onChange: (catalog: ProductWithVariants[]) => void,
+    onError?: (error: unknown) => void,
+  ): Unsubscribe {
     if (DEMO) return demoBackend.subscribeCatalog(onChange)
     let products: Product[] = []
     let variantsByProduct = new Map<string, Variant[]>()
@@ -94,27 +97,36 @@ export const catalogRepository = {
       )
     }
 
+    // Se filtra por `active` y se ORDENA en memoria a propósito: `where + orderBy`
+    // sobre campos distintos exige un índice compuesto, y si no está desplegado la
+    // suscripción falla en silencio y el inventario se queda "Cargando…". Con un
+    // solo `where` no hace falta índice y funciona incluso desde el caché offline.
     const stopProducts = onSnapshot(
-      query(productsRef(), where('active', '==', true), orderBy('name')),
+      query(productsRef(), where('active', '==', true)),
       (snap) => {
-        products = snap.docs.map(productFromDoc)
+        products = snap.docs.map(productFromDoc).sort((a, b) => a.name.localeCompare(b.name))
         hasProducts = true
         emit()
       },
+      (error) => onError?.(error),
     )
 
-    const stopVariants = onSnapshot(allVariantsRef(), (snap) => {
-      const next = new Map<string, Variant[]>()
-      for (const docSnap of snap.docs) {
-        const variant = variantFromDoc(docSnap)
-        const bucket = next.get(variant.productId)
-        if (bucket) bucket.push(variant)
-        else next.set(variant.productId, [variant])
-      }
-      variantsByProduct = next
-      hasVariants = true
-      emit()
-    })
+    const stopVariants = onSnapshot(
+      allVariantsRef(),
+      (snap) => {
+        const next = new Map<string, Variant[]>()
+        for (const docSnap of snap.docs) {
+          const variant = variantFromDoc(docSnap)
+          const bucket = next.get(variant.productId)
+          if (bucket) bucket.push(variant)
+          else next.set(variant.productId, [variant])
+        }
+        variantsByProduct = next
+        hasVariants = true
+        emit()
+      },
+      (error) => onError?.(error),
+    )
 
     return () => {
       stopProducts()
@@ -256,7 +268,6 @@ export const catalogRepository = {
           cost: input.cost,
           minStock: input.minStock,
           active: true,
-          searchTokens: buildSearchTokens(input.name, input.brand, input.sku),
           createdAt: now,
           updatedAt: now,
         }),
@@ -270,6 +281,7 @@ export const catalogRepository = {
             size,
             barcode: code,
             stock: 0,
+            stockByLocation: {},
             minStock: input.minStock,
             active: true,
           }),
@@ -284,5 +296,27 @@ export const catalogRepository = {
     })
 
     return productId
+  },
+
+  /**
+   * Quita una TALLA de una referencia (por ejemplo, una que no se maneja y quedó
+   * creada por error). Solo se permite si esa talla está en CERO en todo el
+   * sistema: borrar una talla con stock descuadraría el inventario. Se borra la
+   * variante y su código de barras en una transacción.
+   */
+  async removeVariant(productId: ProductId, size: Size): Promise<void> {
+    if (DEMO) return demoBackend.removeVariant(productId, size)
+    await runTransaction(db, async (tx) => {
+      const vRef = variantRef(productId, size)
+      const snap = await tx.get(vRef)
+      if (!snap.exists()) return
+      const data = snap.data()
+      if (Number(data.stock ?? 0) !== 0) {
+        throw new DomainError('HAS_STOCK', 'No se puede quitar una talla con stock. Primero sácala del inventario.')
+      }
+      tx.delete(vRef)
+      const barcode = String(data.barcode ?? '')
+      if (barcode) tx.delete(barcodeRef(barcode))
+    })
   },
 }

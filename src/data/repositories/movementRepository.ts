@@ -30,10 +30,14 @@ import {
   type MovementDraft,
   type MovementType,
   type ProductId,
+  type SaleMeta,
+  type Size,
   type StoreId,
   type UserId,
 } from '@/domain/models'
-import { assertMovementIsValid, calculateMovement, DomainError } from '@/domain/rules'
+import { assertMovementIsValid, calculateMovement, DomainError, locationDeltas } from '@/domain/rules'
+import { storeKey } from '@/domain/locations'
+import { groupSales, matchesCustomer, normalize, type Sale } from '@/domain/sales'
 import { toDayKey } from '@/lib/format'
 import { DEMO } from '@/config'
 import { demoBackend } from '../demoBackend'
@@ -67,83 +71,147 @@ export const movementRepository = {
   async record(
     draft: MovementDraft,
     actor: MovementActor,
+    meta?: SaleMeta,
   ): Promise<RecordedMovement> {
-    if (DEMO) return demoBackend.record(draft, actor)
-    const { productId, size } = splitVariantId(draft.variantId)
-    const newMovementRef = doc(movementsRef())
+    const [movement] = await this.recordMany([draft], actor, meta)
+    if (!movement) throw new DomainError('INVALID_QUANTITY', 'No se registró nada')
+    return { movement, stockAfter: movement.stockAfter }
+  },
+
+  /**
+   * Registra un CARRITO completo en una sola transacción.
+   *
+   * Todas las líneas entran o no entra ninguna: si al último par le falta
+   * stock, no queda una venta a medias con dos pares descontados y el tercero
+   * no. Las líneas comparten `saleId`, forma de pago y cliente, así que el
+   * historial puede reconstruir el tiquete.
+   */
+  async recordMany(
+    drafts: MovementDraft[],
+    actor: MovementActor,
+    meta?: SaleMeta,
+  ): Promise<Movement[]> {
+    const lines = mergeDrafts(drafts)
+    if (lines.length === 0) {
+      throw new DomainError('INVALID_QUANTITY', 'No hay nada que registrar')
+    }
+    if (DEMO) return demoBackend.recordMany(lines, actor, meta)
+
     const occurredAt = new Date()
     const dayKey = toDayKey(occurredAt)
+    // Un solo id para todas las líneas de la operación. Si viene uno en `meta`
+    // es una devolución: se cuelga de la venta original en vez de crear otra.
+    const saleId = meta?.saleId ?? doc(movementsRef()).id
 
     return runTransaction(db, async (tx) => {
-      // ── Lecturas ──────────────────────────────────────────────────────────
-      const [productSnap, variantSnap] = await Promise.all([
-        tx.get(productRef(productId)),
-        tx.get(variantRef(productId, size)),
-      ])
-      if (!productSnap.exists() || !variantSnap.exists()) {
-        throw new DomainError('BARCODE_NOT_FOUND', 'La referencia ya no existe')
-      }
+      // Firestore exige TODAS las lecturas antes de cualquier escritura.
+      const refs = lines.map((draft) => splitVariantId(draft.variantId))
+      const snaps = await Promise.all(
+        refs.map(({ productId, size }) =>
+          Promise.all([tx.get(productRef(productId)), tx.get(variantRef(productId, size))]),
+        ),
+      )
 
-      const product = productFromDoc(productSnap as QueryDocumentSnapshot<DocumentData>)
-      const variant = variantFromDoc(variantSnap as QueryDocumentSnapshot<DocumentData>)
-      if (!product.active) {
-        throw new DomainError('PRODUCT_INACTIVE', 'Referencia desactivada')
-      }
+      const movements: Movement[] = []
+      const writes: {
+        productId: ProductId
+        size: Size
+        delta: number
+        locDeltas: { key: string; delta: number }[]
+      }[] = []
 
-      // Revalidación autoritativa contra el stock recién leído del servidor.
-      assertMovementIsValid(draft, variant)
-      const totals = calculateMovement(draft, product, variant)
+      lines.forEach((draft, i) => {
+        const pair = snaps[i]
+        const location = refs[i]
+        if (!pair || !location) throw new DomainError('BARCODE_NOT_FOUND', 'La referencia ya no existe')
+        const [productSnap, variantSnap] = pair
+        if (!productSnap.exists() || !variantSnap.exists()) {
+          throw new DomainError('BARCODE_NOT_FOUND', 'La referencia ya no existe')
+        }
+
+        const product = productFromDoc(productSnap as QueryDocumentSnapshot<DocumentData>)
+        const variant = variantFromDoc(variantSnap as QueryDocumentSnapshot<DocumentData>)
+        if (!product.active) throw new DomainError('PRODUCT_INACTIVE', 'Referencia desactivada')
+
+        // Ubicaciones efectivas: una venta sale del local del vendedor y una
+        // devolución de cliente vuelve a ese mismo local, aunque la UI no las
+        // mande explícitas. Las entradas y traslados sí las traen en el draft.
+        const eff = resolveLocations(draft, actor.storeId)
+
+        // Revalidación autoritativa contra el stock recién leído del servidor.
+        assertMovementIsValid(eff, variant)
+        const totals = calculateMovement(eff, product, variant)
+        const locDeltas = locationDeltas(eff)
+
+        const movement: Movement = {
+          id: doc(movementsRef()).id as Movement['id'],
+          type: draft.type,
+          productId: location.productId,
+          variantId: draft.variantId,
+          snapshot: {
+            productName: product.name,
+            brand: product.brand,
+            sku: product.sku,
+            barcode: variant.barcode,
+            size: variant.size,
+            unitPrice: totals.unitPrice,
+            unitCost: totals.unitCost,
+          },
+          quantity: draft.quantity,
+          stockDelta: totals.stockDelta,
+          stockAfter: totals.stockAfter,
+          total: totals.total,
+          margin: totals.margin,
+          storeId: actor.storeId,
+          userId: actor.userId,
+          userName: actor.userName,
+          occurredAt,
+          dayKey,
+        }
+        if (draft.returnReason) movement.returnReason = draft.returnReason
+        if (eff.fromLocation) movement.fromLocation = eff.fromLocation
+        if (eff.toLocation) movement.toLocation = eff.toLocation
+        // Siempre: sin `saleId` no se puede reconstruir el tiquete ni saber
+        // qué se devolvió de qué venta.
+        movement.saleId = saleId
+        if (meta?.payment) movement.payment = meta.payment
+        if (meta?.customerName) movement.customerName = meta.customerName
+        if (meta?.customerPhone) movement.customerPhone = meta.customerPhone
+
+        movements.push(movement)
+        writes.push({ ...location, delta: totals.stockDelta, locDeltas })
+      })
 
       // ── Escrituras ────────────────────────────────────────────────────────
-      const movement: Movement = {
-        id: newMovementRef.id as Movement['id'],
-        type: draft.type,
-        productId,
-        variantId: draft.variantId,
-        snapshot: {
-          productName: product.name,
-          brand: product.brand,
-          sku: product.sku,
-          barcode: variant.barcode,
-          size: variant.size,
-          unitPrice: totals.unitPrice,
-          unitCost: totals.unitCost,
-        },
-        quantity: draft.quantity,
-        stockDelta: totals.stockDelta,
-        stockAfter: totals.stockAfter,
-        total: totals.total,
-        margin: totals.margin,
-        storeId: actor.storeId,
-        userId: actor.userId,
-        userName: actor.userName,
-        occurredAt,
-        dayKey,
-      }
-      if (draft.returnReason) movement.returnReason = draft.returnReason
-
-      // El documento se arma campo por campo: `id` vive en la ruta, no dentro,
-      // y Firestore rechaza cualquier propiedad con valor `undefined`.
-      const { id: _id, occurredAt: _occurredAt, ...movementFields } = movement
-      tx.set(newMovementRef, {
-        ...movementFields,
-        occurredAt: Timestamp.fromDate(occurredAt),
+      movements.forEach((movement) => {
+        // El documento se arma campo por campo: `id` vive en la ruta, no dentro,
+        // y Firestore rechaza cualquier propiedad con valor `undefined`.
+        const { id, occurredAt: _occurredAt, ...fields } = movement
+        tx.set(doc(movementsRef(), id), {
+          ...fields,
+          occurredAt: Timestamp.fromDate(occurredAt),
+        })
       })
 
       // `increment` en vez de escribir el número calculado: el servidor aplica
-      // el delta, así que el valor final es correcto aunque haya reintentos.
-      tx.update(variantRef(productId, size), {
-        stock: increment(totals.stockDelta),
-        updatedAt: Timestamp.fromDate(occurredAt),
+      // el delta, así que el valor final es correcto aunque haya reintentos. Se
+      // toca el total (`stock`) y cada ubicación afectada (`stockByLocation.*`).
+      writes.forEach(({ productId, size, delta, locDeltas }) => {
+        const update: DocumentData = {
+          stock: increment(delta),
+          updatedAt: Timestamp.fromDate(occurredAt),
+        }
+        for (const { key, delta: d } of locDeltas) {
+          update[`stockByLocation.${key}`] = increment(d)
+        }
+        tx.update(variantRef(productId, size), update)
       })
 
-      tx.set(
-        dailyStatsRef(dayKey),
-        buildDailyDelta(draft.type, movement, actor.storeId, occurredAt),
-        { merge: true },
-      )
+      tx.set(dailyStatsRef(dayKey), buildDailyDelta(movements, actor.storeId, occurredAt), {
+        merge: true,
+      })
 
-      return { movement, stockAfter: totals.stockAfter }
+      return movements
     })
   },
 
@@ -201,54 +269,199 @@ export const movementRepository = {
     return snap.docs.map(movementFromDoc)
   },
 
+  /**
+   * Busca ventas por nombre o celular del cliente, para devolver contra la
+   * venta original en vez de "a ojo".
+   *
+   * Firestore no sabe buscar "contiene" ni ignorar tildes, así que se trae una
+   * ventana de las ventas recientes y se afina en memoria. A la escala de dos
+   * locales son unos cientos de documentos y sale prácticamente gratis; si un
+   * día el histórico crece, la ventana marca el límite honesto: solo busca en
+   * las últimas `WINDOW` líneas de venta.
+   */
+  async searchSales(term: string, max = 12): Promise<Sale[]> {
+    const needle = normalize(term)
+    if (needle.length < 2) return []
+    if (DEMO) return demoBackend.searchSales(needle, max)
+
+    const WINDOW = 400
+    const snap = await getDocs(
+      query(movementsRef(), where('type', '==', 'sale'), orderBy('occurredAt', 'desc'), limit(WINDOW)),
+    )
+
+    const saleIds: string[] = []
+    for (const docSnap of snap.docs) {
+      const m = movementFromDoc(docSnap)
+      const id = m.saleId ?? m.id
+      if (saleIds.includes(id)) continue
+      if (matchesCustomer(m, needle)) saleIds.push(id)
+      if (saleIds.length >= max) break
+    }
+    if (saleIds.length === 0) return []
+
+    // Segundo viaje: trae el tiquete COMPLETO de cada venta encontrada, con sus
+    // devoluciones, que pueden ser posteriores a la ventana anterior.
+    const movements = await this.listBySaleIds(saleIds)
+    return groupSales(movements).sort((a, b) => b.occurredAt.getTime() - a.occurredAt.getTime())
+  },
+
+  /**
+   * Busca las ventas que incluyeron una VARIANTE concreta (el par escaneado).
+   * Es la vía real de la devolución: el cliente rara vez deja nombre o celular,
+   * pero siempre trae el zapato — se escanea y aquí aparecen sus ventas, de la
+   * más reciente a la más antigua, para amarrar la devolución a la correcta.
+   */
+  async searchSalesByVariant(variantId: string, max = 12): Promise<Sale[]> {
+    if (DEMO) return demoBackend.searchSalesByVariant(variantId, max)
+
+    const WINDOW = 400
+    const snap = await getDocs(
+      query(movementsRef(), where('type', '==', 'sale'), orderBy('occurredAt', 'desc'), limit(WINDOW)),
+    )
+
+    const saleIds: string[] = []
+    for (const docSnap of snap.docs) {
+      const m = movementFromDoc(docSnap)
+      if (String(m.variantId) !== String(variantId)) continue
+      const id = m.saleId ?? m.id
+      if (saleIds.includes(id)) continue
+      saleIds.push(id)
+      if (saleIds.length >= max) break
+    }
+    if (saleIds.length === 0) return []
+
+    const movements = await this.listBySaleIds(saleIds)
+    return groupSales(movements).sort((a, b) => b.occurredAt.getTime() - a.occurredAt.getTime())
+  },
+
+  /** Todos los movimientos de una o varias ventas (líneas y devoluciones). */
+  async listBySaleIds(saleIds: string[]): Promise<Movement[]> {
+    if (saleIds.length === 0) return []
+    if (DEMO) return demoBackend.listBySaleIds(saleIds)
+    // `in` acepta hasta 30 valores por consulta.
+    const chunks: string[][] = []
+    for (let i = 0; i < saleIds.length; i += 30) chunks.push(saleIds.slice(i, i + 30))
+    const snaps = await Promise.all(
+      chunks.map((chunk) => getDocs(query(movementsRef(), where('saleId', 'in', chunk)))),
+    )
+    return snaps.flatMap((snap) => snap.docs.map(movementFromDoc))
+  },
+
   async getById(id: string): Promise<Movement | null> {
     if (DEMO) return demoBackend.getById(id)
     const snap = await getDoc(doc(movementsRef(), id))
     return snap.exists() ? movementFromDoc(snap as QueryDocumentSnapshot<DocumentData>) : null
   },
+
+  /**
+   * Últimos movimientos, sin filtrar por tipo en el servidor (así no hace falta
+   * índice compuesto). Quien llama filtra en memoria. Para la vista de Locales,
+   * que mira las salidas recientes hacia cada local.
+   */
+  async listRecent(max = 300): Promise<Movement[]> {
+    if (DEMO) return demoBackend.listRecent(max)
+    const snap = await getDocs(query(movementsRef(), orderBy('occurredAt', 'desc'), limit(max)))
+    return snap.docs.map(movementFromDoc)
+  },
 }
 
 /**
- * Deltas del agregado diario. Se aplican con `increment` para que sumar dos
- * ventas simultáneas no pierda ninguna: cada una suma su parte en el servidor
- * sin leer el valor previo.
+ * Une líneas repetidas de la misma variante. Sin esto, dos líneas del mismo
+ * código leerían el mismo documento y cada una validaría contra el stock
+ * ORIGINAL, dejando pasar una venta que en conjunto no alcanza.
  */
-function buildDailyDelta(
-  type: MovementType,
-  movement: Movement,
-  storeId: StoreId,
-  now: Date,
-): DocumentData {
-  const base: DocumentData = {
-    dayKey: movement.dayKey,
-    margin: increment(movement.margin),
-    updatedAt: Timestamp.fromDate(now),
+/**
+ * Rellena las ubicaciones que la UI puede omitir: una venta sale del local del
+ * vendedor y la devolución de un cliente regresa a ese mismo local. Entradas y
+ * traslados llevan sus ubicaciones explícitas en el draft.
+ */
+function resolveLocations(draft: MovementDraft, storeId: StoreId): MovementDraft {
+  const eff: MovementDraft = { ...draft }
+  if (draft.type === 'sale' && !eff.fromLocation) eff.fromLocation = storeKey(storeId)
+  if (draft.type === 'return' && !eff.toLocation) eff.toLocation = storeKey(storeId)
+  return eff
+}
+
+function mergeDrafts(drafts: MovementDraft[]): MovementDraft[] {
+  const byVariant = new Map<string, MovementDraft>()
+  for (const draft of drafts) {
+    if (draft.quantity <= 0) continue
+    // La clave incluye las ubicaciones: no se pueden fundir dos líneas de la
+    // misma variante que salen o entran a lugares distintos.
+    const key = `${draft.type}:${draft.variantId}:${draft.fromLocation ?? ''}:${draft.toLocation ?? ''}`
+    const previous = byVariant.get(key)
+    byVariant.set(
+      key,
+      previous ? { ...previous, quantity: previous.quantity + draft.quantity } : { ...draft },
+    )
+  }
+  return [...byVariant.values()]
+}
+
+/**
+ * Deltas del agregado diario para todas las líneas de la operación.
+ *
+ * Se suman en memoria y se envían como UN `increment` por campo: dos
+ * `increment()` sobre la misma clave en el mismo objeto se pisarían. Entre
+ * transacciones distintas `increment` sigue siendo seguro — el servidor aplica
+ * el delta sin leer el valor previo, así que dos cajas vendiendo a la vez no
+ * pierden ninguna venta.
+ */
+function buildDailyDelta(movements: Movement[], storeId: StoreId, now: Date): DocumentData {
+  const totals = {
+    margin: 0,
+    salesTotal: 0,
+    purchasesTotal: 0,
+    returnsTotal: 0,
+    salesCount: 0,
+    purchasesCount: 0,
+    unitsSold: 0,
+    byStore: 0,
+  }
+  const unitsByProduct = new Map<string, number>()
+  const bump = (productId: ProductId, units: number) =>
+    unitsByProduct.set(productId, (unitsByProduct.get(productId) ?? 0) + units)
+
+  const dayKey = movements[0]?.dayKey ?? toDayKey(now)
+
+  for (const m of movements) {
+    totals.margin += m.margin
+    switch (m.type as MovementType) {
+      case 'sale':
+        totals.salesTotal += m.total
+        totals.salesCount += 1
+        totals.unitsSold += m.quantity
+        totals.byStore += m.total
+        bump(m.productId, m.quantity)
+        break
+      case 'purchase':
+        totals.purchasesTotal += m.total
+        totals.purchasesCount += 1
+        break
+      case 'return':
+        totals.returnsTotal += m.total
+        // Una devolución revierte unidades vendidas del día.
+        totals.unitsSold -= m.quantity
+        totals.byStore -= m.total
+        bump(m.productId, -m.quantity)
+        break
+    }
   }
 
-  switch (type) {
-    case 'sale':
-      return {
-        ...base,
-        salesTotal: increment(movement.total),
-        salesCount: increment(1),
-        unitsSold: increment(movement.quantity),
-        [`salesByStore.${storeId}`]: increment(movement.total),
-        [`unitsByProduct.${movement.productId}`]: increment(movement.quantity),
-      }
-    case 'purchase':
-      return {
-        ...base,
-        purchasesTotal: increment(movement.total),
-        purchasesCount: increment(1),
-      }
-    case 'return':
-      return {
-        ...base,
-        returnsTotal: increment(movement.total),
-        // Una devolución revierte unidades vendidas del día.
-        unitsSold: increment(-movement.quantity),
-        [`salesByStore.${storeId}`]: increment(-movement.total),
-        [`unitsByProduct.${movement.productId}`]: increment(-movement.quantity),
-      }
+  const delta: DocumentData = {
+    dayKey,
+    updatedAt: Timestamp.fromDate(now),
   }
+  if (totals.margin) delta.margin = increment(totals.margin)
+  if (totals.salesTotal) delta.salesTotal = increment(totals.salesTotal)
+  if (totals.purchasesTotal) delta.purchasesTotal = increment(totals.purchasesTotal)
+  if (totals.returnsTotal) delta.returnsTotal = increment(totals.returnsTotal)
+  if (totals.salesCount) delta.salesCount = increment(totals.salesCount)
+  if (totals.purchasesCount) delta.purchasesCount = increment(totals.purchasesCount)
+  if (totals.unitsSold) delta.unitsSold = increment(totals.unitsSold)
+  if (totals.byStore) delta[`salesByStore.${storeId}`] = increment(totals.byStore)
+  for (const [productId, units] of unitsByProduct) {
+    if (units) delta[`unitsByProduct.${productId}`] = increment(units)
+  }
+  return delta
 }

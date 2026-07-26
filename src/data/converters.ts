@@ -9,6 +9,8 @@
 
 import { Timestamp, type DocumentData, type QueryDocumentSnapshot } from 'firebase/firestore'
 import {
+  type Bodega,
+  type BodegaId,
   type DailyStats,
   type Movement,
   type MovementId,
@@ -24,6 +26,17 @@ import {
   money,
 } from '@/domain/models'
 import { type Invite, type Role, type UserProfile, isRole } from '@/domain/users'
+
+/** Mapa `{ ubicacion: cantidad }` saneado desde un campo suelto de Firestore. */
+const toStockByLocation = (value: unknown): Record<string, number> => {
+  if (!value || typeof value !== 'object') return {}
+  const out: Record<string, number> = {}
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    const n = Number(raw)
+    if (Number.isFinite(n) && n !== 0) out[key] = n
+  }
+  return out
+}
 
 /** Firestore puede devolver `Timestamp`, `Date` o nada según el estado del caché. */
 const toDate = (value: unknown): Date => {
@@ -63,7 +76,6 @@ export const productFromDoc = (snap: QueryDocumentSnapshot<DocumentData>): Produ
     cost: money(Number(d.cost ?? 0)),
     minStock: Number(d.minStock ?? 0),
     active: d.active !== false,
-    searchTokens: Array.isArray(d.searchTokens) ? (d.searchTokens as string[]) : [],
     createdAt: toDate(d.createdAt),
     updatedAt: toDate(d.updatedAt),
   }
@@ -77,7 +89,6 @@ export const productToDoc = (product: Omit<Product, 'id'>): DocumentData => ({
   cost: product.cost,
   minStock: product.minStock,
   active: product.active,
-  searchTokens: product.searchTokens,
   createdAt: Timestamp.fromDate(product.createdAt),
   updatedAt: Timestamp.fromDate(product.updatedAt),
 })
@@ -94,6 +105,7 @@ export const variantFromDoc = (snap: QueryDocumentSnapshot<DocumentData>): Varia
     size: toSize(d.size ?? snap.id),
     barcode: String(d.barcode ?? ''),
     stock: Number(d.stock ?? 0),
+    stockByLocation: toStockByLocation(d.stockByLocation),
     minStock: Number(d.minStock ?? 0),
     active: d.active !== false,
     updatedAt: toDate(d.updatedAt),
@@ -105,6 +117,7 @@ export const variantToDoc = (variant: Omit<Variant, 'id' | 'updatedAt'>): Docume
   size: variant.size,
   barcode: variant.barcode,
   stock: variant.stock,
+  stockByLocation: variant.stockByLocation,
   minStock: variant.minStock,
   active: variant.active,
   updatedAt: Timestamp.now(),
@@ -152,6 +165,12 @@ export const movementFromDoc = (snap: QueryDocumentSnapshot<DocumentData>): Move
   }
   // `exactOptionalPropertyTypes` no permite asignar `undefined` explícito.
   if (d.returnReason) movement.returnReason = d.returnReason
+  if (d.fromLocation) movement.fromLocation = String(d.fromLocation)
+  if (d.toLocation) movement.toLocation = String(d.toLocation)
+  if (d.saleId) movement.saleId = String(d.saleId)
+  if (d.payment) movement.payment = String(d.payment)
+  if (d.customerName) movement.customerName = String(d.customerName)
+  if (d.customerPhone) movement.customerPhone = String(d.customerPhone)
   return movement
 }
 
@@ -181,7 +200,7 @@ const toRole = (value: unknown): Role => (isRole(value) ? value : 'empleado')
 
 export const userFromDoc = (snap: QueryDocumentSnapshot<DocumentData>): UserProfile => {
   const d = snap.data()
-  return {
+  const profile: UserProfile = {
     id: snap.id as UserId,
     name: String(d.name ?? ''),
     email: String(d.email ?? ''),
@@ -189,7 +208,31 @@ export const userFromDoc = (snap: QueryDocumentSnapshot<DocumentData>): UserProf
     active: d.active !== false,
     createdAt: toDate(d.createdAt),
   }
+  if (d.storeId) profile.storeId = String(d.storeId) as StoreId
+  if (Array.isArray(d.bodegaIds)) profile.bodegaIds = (d.bodegaIds as unknown[]).map(String)
+  if (d.owner === true) profile.owner = true
+  return profile
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const bodegaFromDoc = (snap: QueryDocumentSnapshot<DocumentData>): Bodega => {
+  const d = snap.data()
+  return {
+    id: snap.id as BodegaId,
+    code: String(d.code ?? snap.id),
+    name: String(d.name ?? ''),
+    active: d.active !== false,
+    createdAt: toDate(d.createdAt),
+  }
+}
+
+export const bodegaToDoc = (bodega: Omit<Bodega, 'id'>): DocumentData => ({
+  code: bodega.code,
+  name: bodega.name,
+  active: bodega.active,
+  createdAt: Timestamp.fromDate(bodega.createdAt),
+})
 
 export const inviteFromDoc = (snap: QueryDocumentSnapshot<DocumentData>): Invite => {
   const d = snap.data()
@@ -201,6 +244,8 @@ export const inviteFromDoc = (snap: QueryDocumentSnapshot<DocumentData>): Invite
     active: d.active !== false,
     createdAt: toDate(d.createdAt),
   }
+  if (d.storeId) invite.storeId = String(d.storeId)
+  if (d.bodegaId) invite.bodegaId = String(d.bodegaId)
   if (d.usedBy) invite.usedBy = String(d.usedBy) as UserId
   return invite
 }

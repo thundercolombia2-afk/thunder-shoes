@@ -64,7 +64,7 @@ export function DashboardScreen() {
     <div style={{ padding: '18px 20px 32px', display: 'flex', flexDirection: 'column', gap: 16 }} className="iw-fade">
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <div style={{ flex: 1 }}>
-          <h1 style={{ margin: 0, font: '700 24px var(--font-display)' }}>Dashboard</h1>
+          <h1 style={{ margin: 0, font: '700 24px var(--font-display)' }}>Ingresos y egresos</h1>
           <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>Hoy · {formatLongDate(new Date())}</span>
         </div>
         {user ? <RoleBadge role={user.role} /> : null}
@@ -80,7 +80,7 @@ export function DashboardScreen() {
         </div>
 
         <PlainCard label="Stock total" value={String(totalStock)} foot={`${alertCount} alertas de stock bajo`} footColor="var(--color-danger)" />
-        <PlainCard label="Compras de hoy" value={formatMoney(today?.purchasesTotal ?? 0)} foot={`${today?.purchasesCount ?? 0} ingresos de stock`} />
+        <PlainCard label="Entradas de hoy" value={formatMoney(today?.purchasesTotal ?? 0)} foot={`${today?.purchasesCount ?? 0} ingresos de stock`} />
 
         <div
           style={{

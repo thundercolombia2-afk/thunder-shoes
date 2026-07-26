@@ -11,7 +11,7 @@ import { useScanFlow } from '@/app/scanFlow'
 import { movementRepository } from '@/data/repositories/movementRepository'
 import { money } from '@/domain/models'
 import { errorMessage } from '@/domain/rules'
-import { formatMoney, parseMoneyInput } from '@/lib/format'
+import { formatMoney, formatMoneyInput, parseMoneyInput } from '@/lib/format'
 import { BackLink, FlowColumn, QuantityStepper, ScannedSummary } from './_shared'
 import { Button } from '@/ui/Button'
 
@@ -98,8 +98,8 @@ export function BuyScreen() {
           >
             <span style={{ font: '700 18px var(--font-display)', color: 'var(--text-muted)' }}>$</span>
             <input
-              value={new Intl.NumberFormat('es-CO').format(unitCost)}
-              onChange={(e) => setCostStr(e.target.value)}
+              value={formatMoneyInput(costStr)}
+              onChange={(e) => setCostStr(e.target.value.replace(/\D/g, ''))}
               inputMode="numeric"
               style={{
                 flex: 1,

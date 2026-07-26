@@ -33,10 +33,11 @@ import {
   type DocumentReference,
 } from 'firebase/firestore'
 import { db } from './firebase'
-import type { ProductId, Size, StoreId } from '@/domain/models'
+import type { BodegaId, ProductId, Size, StoreId } from '@/domain/models'
 
 export const COLLECTIONS = {
   stores: 'stores',
+  bodegas: 'bodegas',
   products: 'products',
   variants: 'variants',
   barcodes: 'barcodes',
@@ -48,6 +49,10 @@ export const COLLECTIONS = {
 
 export const storesRef = (): CollectionReference => collection(db, COLLECTIONS.stores)
 export const storeRef = (id: StoreId): DocumentReference => doc(db, COLLECTIONS.stores, id)
+
+/** Bodegas: almacenes creados desde Configuración. */
+export const bodegasRef = (): CollectionReference => collection(db, COLLECTIONS.bodegas)
+export const bodegaRef = (id: BodegaId): DocumentReference => doc(db, COLLECTIONS.bodegas, id)
 
 export const productsRef = (): CollectionReference => collection(db, COLLECTIONS.products)
 export const productRef = (id: ProductId): DocumentReference =>
@@ -98,3 +103,9 @@ export const inviteRef = (code: string): DocumentReference =>
  * invitación".
  */
 export const systemStateRef = (): DocumentReference => doc(db, 'system', 'state')
+
+/**
+ * Configuración global de la plataforma: por ahora, la contraseña compartida
+ * para ingresar mercancía a una bodega. Un solo documento.
+ */
+export const systemConfigRef = (): DocumentReference => doc(db, 'system', 'config')

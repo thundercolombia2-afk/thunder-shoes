@@ -48,8 +48,11 @@ export function useCatalog(): AsyncState<ProductWithVariants[]> {
   })
 
   useEffect(() => {
-    const unsubscribe = catalogRepository.subscribeToCatalog((catalog) =>
-      setState({ data: catalog, loading: false, error: null }),
+    const unsubscribe = catalogRepository.subscribeToCatalog(
+      (catalog) => setState({ data: catalog, loading: false, error: null }),
+      // Sin esto, un error de permisos o de índice dejaba el inventario colgado
+      // en "Cargando…" para siempre. Ahora corta la carga y expone el error.
+      (error) => setState((s) => ({ ...s, loading: false, error })),
     )
     return unsubscribe
   }, [])
