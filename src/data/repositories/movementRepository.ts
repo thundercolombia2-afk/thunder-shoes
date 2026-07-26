@@ -459,9 +459,15 @@ function buildDailyDelta(movements: Movement[], storeId: StoreId, now: Date): Do
   if (totals.salesCount) delta.salesCount = increment(totals.salesCount)
   if (totals.purchasesCount) delta.purchasesCount = increment(totals.purchasesCount)
   if (totals.unitsSold) delta.unitsSold = increment(totals.unitsSold)
-  if (totals.byStore) delta[`salesByStore.${storeId}`] = increment(totals.byStore)
+  // OJO: con `set(..., { merge: true })` una clave con punto ("salesByStore.163")
+  // crea un campo LITERAL en la raíz, no anida el mapa (eso solo lo hace
+  // `update()`). Por eso se arma el objeto ANIDADO: el merge lo fusiona en
+  // profundidad y `increment` se aplica al campo interno.
+  if (totals.byStore) delta.salesByStore = { [storeId]: increment(totals.byStore) }
+  const unitsDelta: DocumentData = {}
   for (const [productId, units] of unitsByProduct) {
-    if (units) delta[`unitsByProduct.${productId}`] = increment(units)
+    if (units) unitsDelta[productId] = increment(units)
   }
+  if (Object.keys(unitsDelta).length > 0) delta.unitsByProduct = unitsDelta
   return delta
 }
