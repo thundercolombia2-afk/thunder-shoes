@@ -150,7 +150,7 @@ export function HistoryScreen() {
           overflowX: 'auto',
         }}
       >
-        <div style={{ minWidth: 760 }}>
+        <div style={{ minWidth: 860 }}>
           <div
             style={{
               display: 'grid',
