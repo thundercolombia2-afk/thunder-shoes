@@ -12,7 +12,8 @@ import { useCatalog, useStores } from '@/app/hooks'
 import { movementRepository } from '@/data/repositories/movementRepository'
 import { bodegaRepository } from '@/data/repositories/bodegaRepository'
 import { parseLocationKey, stockAt, storeKey } from '@/domain/locations'
-import { formatMoney, formatShortDate, formatTime } from '@/lib/format'
+import { formatShortDate, formatTime } from '@/lib/format'
+import { Money } from '@/ui/Money'
 import type { Bodega, Movement } from '@/domain/models'
 
 type Tab = 'vendido' | 'devuelto' | 'stock' | 'entregas'
@@ -151,7 +152,7 @@ export function LocalesScreen() {
           {/* Contenido de la sub-pestaña */}
           {tab === 'vendido' ? (
             <section style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <SummaryBar label={`${sales.length} ${sales.length === 1 ? 'venta' : 'ventas'} · ${salesUnits} pares`} value={formatMoney(salesTotal)} />
+              <SummaryBar label={`${sales.length} ${sales.length === 1 ? 'venta' : 'ventas'} · ${salesUnits} pares`} value={<Money value={salesTotal} />} />
               <Card>
                 {loading ? (
                   <Empty text="Cargando ventas…" />
@@ -164,7 +165,7 @@ export function LocalesScreen() {
                       title={`${m.snapshot.productName} · T${m.snapshot.size}`}
                       sub={[formatShortDate(m.occurredAt), formatTime(m.occurredAt), m.payment, m.userName].filter(Boolean).join(' · ')}
                       qty={`×${m.quantity}`}
-                      value={formatMoney(m.total)}
+                      value={<Money value={m.total} />}
                     />
                   ))
                 )}
@@ -172,7 +173,7 @@ export function LocalesScreen() {
             </section>
           ) : tab === 'devuelto' ? (
             <section style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <SummaryBar label={`${returns.length} ${returns.length === 1 ? 'devolución' : 'devoluciones'} · ${returnsUnits} pares`} value={formatMoney(returnsTotal)} />
+              <SummaryBar label={`${returns.length} ${returns.length === 1 ? 'devolución' : 'devoluciones'} · ${returnsUnits} pares`} value={<Money value={returnsTotal} />} />
               <Card>
                 {loading ? (
                   <Empty text="Cargando devoluciones…" />
@@ -186,7 +187,7 @@ export function LocalesScreen() {
                       sub={[formatShortDate(m.occurredAt), formatTime(m.occurredAt), m.returnReason, m.userName].filter(Boolean).join(' · ')}
                       qty={`+${m.quantity}`}
                       qtyColor="var(--color-success)"
-                      value={formatMoney(m.total)}
+                      value={<Money value={m.total} />}
                     />
                   ))
                 )}
@@ -258,7 +259,7 @@ function Card({ children }: { children: React.ReactNode }) {
   )
 }
 
-function SummaryBar({ label, value }: { label: string; value: string }) {
+function SummaryBar({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, background: 'var(--surface-sunken)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', padding: '10px 15px' }}>
       <span style={{ fontSize: 13, color: 'var(--text-secondary)', fontWeight: 700, minWidth: 0 }}>{label}</span>
@@ -267,7 +268,7 @@ function SummaryBar({ label, value }: { label: string; value: string }) {
   )
 }
 
-function MovRow({ title, sub, qty, qtyColor, value }: { title: string; sub: string; qty: string; qtyColor?: string; value?: string }) {
+function MovRow({ title, sub, qty, qtyColor, value }: { title: string; sub: string; qty: string; qtyColor?: string; value?: React.ReactNode }) {
   return (
     <div className="iw-row" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', borderBottom: '1px solid var(--border-subtle)' }}>
       <div style={{ flex: 1, minWidth: 0 }}>

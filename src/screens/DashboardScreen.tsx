@@ -12,6 +12,7 @@ import { expenseRepository } from '@/data/repositories/expenseRepository'
 import { formatLongDate, formatMoney, formatMoneyInput, formatShortDate, parseMoneyInput } from '@/lib/format'
 import { RoleBadge } from './_shared'
 import { Icon } from '@/ui/Icon'
+import { Money } from '@/ui/Money'
 import { money, type DailyStats, type Expense, type ExpenseDraft, type Movement, type Store } from '@/domain/models'
 
 export function DashboardScreen() {
@@ -35,8 +36,6 @@ export function DashboardScreen() {
 
   const totalStock = useMemo(() => catalog.reduce((s, r) => s + r.totalStock, 0), [catalog])
 
-  const mask = (value: string) => (adminUnlocked ? value : '••••')
-
   return (
     <div style={{ padding: '18px 20px 32px', display: 'flex', flexDirection: 'column', gap: 16 }} className="iw-fade">
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
@@ -50,14 +49,18 @@ export function DashboardScreen() {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 12 }}>
         <div style={{ background: 'var(--iw-plum)', color: '#fff', borderRadius: 'var(--radius-lg)', padding: '16px 18px', boxShadow: 'var(--shadow-md)' }}>
           <div style={{ fontSize: 12, opacity: 0.75, fontWeight: 700 }}>Ventas de hoy</div>
-          <div style={{ font: '700 var(--font-display)', fontSize: 'clamp(18px, 6vw, 26px)', overflowWrap: 'anywhere' }}>{formatMoney(today?.salesTotal ?? 0)}</div>
-          <div style={{ fontSize: 11.5, opacity: 0.8, marginTop: 4, overflowWrap: 'anywhere' }}>
-            {stores.map((s) => `${s.code} · ${formatMoney(today?.salesByStore[s.id] ?? 0)}`).join('   ')}
+          <div style={{ font: '700 var(--font-display)', fontSize: 'clamp(20px, 6vw, 26px)' }}>
+            <Money value={today?.salesTotal ?? 0} />
+          </div>
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 11.5, opacity: 0.85, marginTop: 4 }}>
+            {stores.map((s) => (
+              <span key={s.id}>{s.code} · <Money value={today?.salesByStore[s.id] ?? 0} /></span>
+            ))}
           </div>
         </div>
 
         <PlainCard label="Stock total" value={String(totalStock)} foot={`${catalog.length} referencias`} />
-        <PlainCard label="Entradas de hoy" value={formatMoney(today?.purchasesTotal ?? 0)} foot={`${today?.purchasesCount ?? 0} ingresos de stock`} />
+        <PlainCard label="Entradas de hoy" value={<Money value={today?.purchasesTotal ?? 0} />} foot={`${today?.purchasesCount ?? 0} ingresos de stock`} />
 
         <div
           style={{
@@ -71,8 +74,8 @@ export function DashboardScreen() {
           }}
         >
           <div style={{ fontSize: 12, opacity: 0.75, fontWeight: 700 }}>Utilidad de hoy</div>
-          <div style={{ font: '700 var(--font-display)', fontSize: 'clamp(18px, 6vw, 26px)', overflowWrap: 'anywhere', filter: adminUnlocked ? 'none' : 'blur(7px)' }}>
-            {mask(formatMoney(today?.margin ?? 0))}
+          <div style={{ font: '700 var(--font-display)', fontSize: 'clamp(20px, 6vw, 26px)', filter: adminUnlocked ? 'none' : 'blur(7px)' }}>
+            {adminUnlocked ? <Money value={today?.margin ?? 0} /> : '••••'}
           </div>
           {!adminUnlocked ? (
             <div
@@ -142,7 +145,7 @@ function IncomeTab({ incomes, stores }: { incomes: Movement[]; stores: Store[] }
   const units = incomes.reduce((s, m) => s + m.quantity, 0)
   return (
     <section style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      <SummaryBar label={`${incomes.length} ${incomes.length === 1 ? 'venta' : 'ventas'} · ${units} pares`} value={formatMoney(total)} />
+      <SummaryBar label={`${incomes.length} ${incomes.length === 1 ? 'venta' : 'ventas'} · ${units} pares`} value={<Money value={total} />} />
       <TableCard headers={['Concepto', 'Detalle', 'Cant.', 'Valor', 'Fecha', 'Local', 'Vendedor']}>
         {incomes.length === 0 ? (
           <EmptyRow cols={7} text="Todavía no hay ventas registradas." />
@@ -152,7 +155,7 @@ function IncomeTab({ incomes, stores }: { incomes: Movement[]; stores: Store[] }
               <Td><b>Venta</b></Td>
               <Td>{m.snapshot.productName} · T{m.snapshot.size}{m.payment ? ` · ${m.payment}` : ''}</Td>
               <Td>{m.quantity}</Td>
-              <Td strong>{formatMoney(m.total)}</Td>
+              <Td strong><Money value={m.total} /></Td>
               <Td>{formatShortDate(m.occurredAt)}</Td>
               <Td>{storeCode(m.storeId)}</Td>
               <Td>{m.userName}</Td>
@@ -196,7 +199,7 @@ function ExpenseTab({
     <section style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <div style={{ flex: 1, minWidth: 180 }}>
-          <SummaryBar label={`${expenses.length} ${expenses.length === 1 ? 'egreso' : 'egresos'}`} value={formatMoney(total)} />
+          <SummaryBar label={`${expenses.length} ${expenses.length === 1 ? 'egreso' : 'egresos'}`} value={<Money value={total} />} />
         </div>
         {canAdd ? (
           <button
@@ -222,7 +225,7 @@ function ExpenseTab({
               <Td><b>{e.concept}</b></Td>
               <Td>{e.detail || '—'}</Td>
               <Td>{e.quantity || '—'}</Td>
-              <Td strong>{formatMoney(e.value)}</Td>
+              <Td strong><Money value={e.value} /></Td>
               <Td>{formatShortDate(e.occurredAt)}</Td>
               <Td>{e.userName}</Td>
               {canAdd ? (
@@ -377,7 +380,7 @@ function ExpenseFormModal({
   )
 }
 
-function SummaryBar({ label, value }: { label: string; value: string }) {
+function SummaryBar({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, background: 'var(--surface-sunken)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', padding: '10px 15px' }}>
       <span style={{ fontSize: 13, color: 'var(--text-secondary)', fontWeight: 700, minWidth: 0 }}>{label}</span>
@@ -415,11 +418,11 @@ function EmptyRow({ cols, text }: { cols: number; text: string }) {
   )
 }
 
-function PlainCard({ label, value, foot, footColor }: { label: string; value: string; foot?: string; footColor?: string }) {
+function PlainCard({ label, value, foot, footColor }: { label: string; value: React.ReactNode; foot?: string; footColor?: string }) {
   return (
     <div style={{ background: 'var(--surface-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-lg)', padding: '16px 18px', boxShadow: 'var(--shadow-sm)' }}>
       <div style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 700 }}>{label}</div>
-      <div style={{ font: '700 var(--font-display)', fontSize: 'clamp(18px, 6vw, 26px)', overflowWrap: 'anywhere' }}>{value}</div>
+      <div style={{ font: '700 var(--font-display)', fontSize: 'clamp(20px, 6vw, 26px)', overflowWrap: 'anywhere' }}>{value}</div>
       {foot ? <div style={{ fontSize: 12, color: footColor ?? 'var(--text-muted)', marginTop: 4, fontWeight: footColor ? 700 : 400 }}>{foot}</div> : null}
     </div>
   )

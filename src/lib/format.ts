@@ -20,6 +20,24 @@ export function formatMoneyCompact(value: Money | number): string {
   return formatMoney(n)
 }
 
+const millionsFmt = new Intl.NumberFormat('es-CO', { maximumFractionDigits: 1 })
+
+/**
+ * Cómo mostrar un monto SIN que se desborde: si es < 1 millón, el valor completo
+ * ("$459.900"); si es mayor, se reduce a millones ("$210,7 M") con un `title`
+ * que trae el valor exacto y su escala (millones / miles de millones) para el
+ * tooltip. Así el número nunca queda diminuto y no se pierde el detalle.
+ */
+export function moneyDisplay(value: Money | number): { text: string; title?: string } {
+  const n = Math.round(value)
+  const abs = Math.abs(n)
+  if (abs >= 1_000_000) {
+    const scale = abs >= 1_000_000_000 ? 'miles de millones' : 'millones'
+    return { text: `$${millionsFmt.format(n / 1_000_000)} M`, title: `${formatMoney(n)} · en ${scale}` }
+  }
+  return { text: formatMoney(n) }
+}
+
 const dayKeyFormatter = new Intl.DateTimeFormat('en-CA', {
   timeZone: BUSINESS_TIMEZONE,
   year: 'numeric',
