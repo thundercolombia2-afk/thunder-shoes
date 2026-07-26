@@ -12,6 +12,7 @@ import {
   type Bodega,
   type BodegaId,
   type DailyStats,
+  type Expense,
   type Movement,
   type MovementId,
   type Product,
@@ -176,6 +177,28 @@ export const movementFromDoc = (snap: QueryDocumentSnapshot<DocumentData>): Move
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Reconstruye un mapa `{ clave: número }` desde el documento, sumando DOS
+ * fuentes: el mapa anidado correcto (`campo: { clave: n }`) y las claves
+ * heredadas con punto en el nombre (`"campo.clave": n`). Estas últimas las dejó
+ * un bug viejo (una clave con punto en `set(merge)` crea un campo literal en la
+ * raíz en vez de anidar). Así el dashboard muestra bien tanto los datos nuevos
+ * como los ya guardados con el formato roto.
+ */
+const mergeDotted = (d: DocumentData, field: string): Record<string, number> => {
+  const out: Record<string, number> = {}
+  const nested = (d[field] ?? {}) as Record<string, unknown>
+  for (const [k, v] of Object.entries(nested)) out[k] = (out[k] ?? 0) + Number(v)
+  const prefix = `${field}.`
+  for (const [k, v] of Object.entries(d)) {
+    if (k.startsWith(prefix)) {
+      const key = k.slice(prefix.length)
+      out[key] = (out[key] ?? 0) + Number(v)
+    }
+  }
+  return out
+}
+
 export const dailyStatsFromDoc = (snap: QueryDocumentSnapshot<DocumentData>): DailyStats => {
   const d = snap.data()
   return {
@@ -188,9 +211,27 @@ export const dailyStatsFromDoc = (snap: QueryDocumentSnapshot<DocumentData>): Da
     salesCount: Number(d.salesCount ?? 0),
     purchasesCount: Number(d.purchasesCount ?? 0),
     unitsSold: Number(d.unitsSold ?? 0),
-    salesByStore: (d.salesByStore ?? {}) as Record<string, number>,
-    unitsByProduct: (d.unitsByProduct ?? {}) as Record<string, number>,
+    salesByStore: mergeDotted(d, 'salesByStore'),
+    unitsByProduct: mergeDotted(d, 'unitsByProduct'),
     updatedAt: toDate(d.updatedAt),
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const expenseFromDoc = (snap: QueryDocumentSnapshot<DocumentData>): Expense => {
+  const d = snap.data()
+  return {
+    id: snap.id,
+    concept: String(d.concept ?? ''),
+    detail: String(d.detail ?? ''),
+    quantity: Number(d.quantity ?? 0),
+    value: money(Number(d.value ?? 0)),
+    occurredAt: toDate(d.occurredAt),
+    dayKey: String(d.dayKey ?? ''),
+    userId: String(d.userId ?? '') as UserId,
+    userName: String(d.userName ?? ''),
+    createdAt: toDate(d.createdAt),
   }
 }
 

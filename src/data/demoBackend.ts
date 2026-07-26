@@ -13,6 +13,8 @@ import {
   type Bodega,
   type BodegaId,
   type DailyStats,
+  type Expense,
+  type ExpenseDraft,
   type LowStockAlert,
   type Movement,
   type MovementDraft,
@@ -263,6 +265,11 @@ const bodegas: Bodega[] = [
 ]
 const bodegaListeners = new Set<(b: Bodega[]) => void>()
 const notifyBodegas = () => bodegaListeners.forEach((l) => l([...bodegas]))
+
+// Egresos demo (cargados a mano).
+const expenses: Expense[] = []
+const expenseListeners = new Set<(e: Expense[]) => void>()
+const notifyExpenses = () => expenseListeners.forEach((l) => l([...expenses]))
 
 // Configuración demo: contraseña compartida para ingresar mercancía.
 const config = { entryPassword: '1234' }
@@ -555,6 +562,29 @@ export const demoBackend = {
   setUserActive(uid: string, active: boolean): Promise<void> {
     const u = team.find((x) => x.id === uid)
     if (u) u.active = active
+    return Promise.resolve()
+  },
+
+  // Egresos
+  subscribeExpenses(onChange: (e: Expense[]) => void): () => void {
+    expenseListeners.add(onChange)
+    onChange([...expenses])
+    return () => expenseListeners.delete(onChange)
+  },
+  createExpense(draft: ExpenseDraft, actor: { userId: string; userName: string }): Promise<void> {
+    expenses.unshift({
+      id: `demo-e${expenses.length + 1}`,
+      concept: draft.concept,
+      detail: draft.detail,
+      quantity: draft.quantity,
+      value: draft.value,
+      occurredAt: draft.occurredAt,
+      dayKey: toDayKey(draft.occurredAt),
+      userId: actor.userId as UserId,
+      userName: actor.userName,
+      createdAt: new Date(),
+    })
+    notifyExpenses()
     return Promise.resolve()
   },
 

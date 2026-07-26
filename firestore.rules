@@ -168,6 +168,19 @@ service cloud.firestore {
       allow read, write: if hasProfile();
     }
 
+    // ── Egresos: gastos cargados a mano por el administrador (socio/dueña) ─────
+    // Cualquiera con perfil los lee (alimentan Ingresos y egresos); crearlos es
+    // solo de socios y firmado con el uid real. No se editan; los borra la dueña.
+    match /expenses/{expenseId} {
+      allow read: if hasProfile();
+      allow create: if isSocio()
+        && request.resource.data.userId == uid()
+        && request.resource.data.value is number
+        && request.resource.data.quantity is int;
+      allow update: if false;
+      allow delete: if isOwner();
+    }
+
     // ── Libro mayor (INMUTABLE, firmado por el uid real) ──────────────────────
     match /movements/{movementId} {
       allow read: if hasProfile();

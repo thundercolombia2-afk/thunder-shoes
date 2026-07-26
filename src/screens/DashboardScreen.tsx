@@ -4,14 +4,16 @@
  * La utilidad se difumina salvo en modo admin, igual que el diseño.
  */
 
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useCatalog, useStats, useStores } from '@/app/hooks'
 import { useSession } from '@/app/session'
 import { useIsMobile } from '@/app/useMediaQuery'
-import { formatLongDate, formatMoney, weekdayFromDayKey } from '@/lib/format'
+import { movementRepository } from '@/data/repositories/movementRepository'
+import { expenseRepository } from '@/data/repositories/expenseRepository'
+import { formatLongDate, formatMoney, formatMoneyInput, formatShortDate, parseMoneyInput, weekdayFromDayKey } from '@/lib/format'
 import { RoleBadge } from './_shared'
 import { Icon } from '@/ui/Icon'
-import type { DailyStats } from '@/domain/models'
+import { money, type DailyStats, type Expense, type Movement, type Store } from '@/domain/models'
 
 const STORE_COLORS = ['var(--iw-plum)', '#b58900', 'var(--color-success)', 'var(--iw-orange-red)']
 
@@ -22,6 +24,16 @@ export function DashboardScreen() {
   const { user, can } = useSession()
   const adminUnlocked = can('seeCosts')
   const isMobile = useIsMobile()
+
+  // Ingresos (ventas) y egresos (gastos a mano) para las tablas.
+  const [movs, setMovs] = useState<Movement[]>([])
+  const [expenses, setExpenses] = useState<Expense[]>([])
+  const [tab, setTab] = useState<'ingresos' | 'egresos'>('ingresos')
+  useEffect(() => {
+    movementRepository.listRecent().then(setMovs).catch(() => undefined)
+  }, [])
+  useEffect(() => expenseRepository.subscribe(setExpenses), [])
+  const incomes = useMemo(() => movs.filter((m) => m.type === 'sale'), [movs])
 
   const today: DailyStats | undefined = days.at(-1)
 
@@ -142,7 +154,219 @@ export function DashboardScreen() {
           </div>
         )}
       </div>
+
+      {/* ── Ingresos / Egresos ─────────────────────────────────────────────── */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', borderBottom: '1px solid var(--border-subtle)', marginTop: 4 }}>
+        {(['ingresos', 'egresos'] as const).map((t) => {
+          const on = t === tab
+          return (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className="iw-press"
+              style={{
+                padding: '9px 16px',
+                borderRadius: 'var(--radius-md) var(--radius-md) 0 0',
+                font: '700 14px var(--font-body)',
+                cursor: 'pointer',
+                border: 'none',
+                borderBottom: `2.5px solid ${on ? 'var(--iw-plum)' : 'transparent'}`,
+                background: 'transparent',
+                color: on ? 'var(--iw-plum)' : 'var(--text-muted)',
+                textTransform: 'capitalize',
+              }}
+            >
+              {t}
+            </button>
+          )
+        })}
+      </div>
+
+      {tab === 'ingresos' ? (
+        <IncomeTab incomes={incomes} stores={stores} />
+      ) : (
+        <ExpenseTab
+          expenses={expenses}
+          canAdd={adminUnlocked}
+          actor={user ? { userId: user.id, userName: user.name } : null}
+        />
+      )}
     </div>
+  )
+}
+
+/** Tabla de INGRESOS: las ventas (concepto, detalle, cantidad, valor, fecha,
+ *  local, vendedor), de más reciente a más antigua. */
+function IncomeTab({ incomes, stores }: { incomes: Movement[]; stores: Store[] }) {
+  const storeCode = (id: string) => stores.find((s) => s.id === id)?.code ?? id
+  const total = incomes.reduce((s, m) => s + m.total, 0)
+  const units = incomes.reduce((s, m) => s + m.quantity, 0)
+  return (
+    <section style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <SummaryBar label={`${incomes.length} ${incomes.length === 1 ? 'venta' : 'ventas'} · ${units} pares`} value={formatMoney(total)} />
+      <TableCard headers={['Concepto', 'Detalle', 'Cant.', 'Valor', 'Fecha', 'Local', 'Vendedor']}>
+        {incomes.length === 0 ? (
+          <EmptyRow cols={7} text="Todavía no hay ventas registradas." />
+        ) : (
+          incomes.map((m) => (
+            <tr key={m.id} style={{ borderTop: '1px solid var(--border-subtle)' }}>
+              <Td><b>Venta</b></Td>
+              <Td>{m.snapshot.productName} · T{m.snapshot.size}{m.payment ? ` · ${m.payment}` : ''}</Td>
+              <Td>{m.quantity}</Td>
+              <Td strong>{formatMoney(m.total)}</Td>
+              <Td>{formatShortDate(m.occurredAt)}</Td>
+              <Td>{storeCode(m.storeId)}</Td>
+              <Td>{m.userName}</Td>
+            </tr>
+          ))
+        )}
+      </TableCard>
+    </section>
+  )
+}
+
+/** Tabla + formulario de EGRESOS (gastos a mano). */
+function ExpenseTab({
+  expenses,
+  canAdd,
+  actor,
+}: {
+  expenses: Expense[]
+  canAdd: boolean
+  actor: { userId: string; userName: string } | null
+}) {
+  const [concept, setConcept] = useState('')
+  const [detail, setDetail] = useState('')
+  const [quantity, setQuantity] = useState('1')
+  const [value, setValue] = useState('')
+  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [saving, setSaving] = useState(false)
+  const [msg, setMsg] = useState('')
+
+  const total = expenses.reduce((s, e) => s + e.value, 0)
+  const canSubmit = canAdd && !!actor && concept.trim().length > 0 && parseMoneyInput(value) > 0 && !saving
+
+  const submit = async () => {
+    if (!actor) return
+    setMsg('')
+    if (!concept.trim()) return setMsg('Escribe el concepto del egreso.')
+    if (parseMoneyInput(value) <= 0) return setMsg('El valor debe ser mayor a cero.')
+    setSaving(true)
+    try {
+      // La fecha se interpreta al mediodía local para no cruzar el cambio de día.
+      const occurredAt = new Date(`${date}T12:00:00`)
+      await expenseRepository.create(
+        { concept: concept.trim(), detail: detail.trim(), quantity: Math.max(0, Math.floor(Number(quantity) || 0)), value: money(parseMoneyInput(value)), occurredAt },
+        actor,
+      )
+      setConcept('')
+      setDetail('')
+      setQuantity('1')
+      setValue('')
+      setMsg('')
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : 'No se pudo registrar el egreso.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const fieldStyle: React.CSSProperties = {
+    height: 42,
+    padding: '0 12px',
+    border: '1.5px solid var(--border-subtle)',
+    borderRadius: 'var(--radius-md)',
+    font: '500 14px var(--font-body)',
+    outline: 'none',
+    background: 'var(--surface-card)',
+    color: 'var(--text-primary)',
+    boxSizing: 'border-box',
+    width: '100%',
+  }
+
+  return (
+    <section style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <SummaryBar label={`${expenses.length} ${expenses.length === 1 ? 'egreso' : 'egresos'}`} value={formatMoney(total)} />
+
+      {canAdd ? (
+        <div style={{ background: 'var(--surface-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-lg)', boxShadow: 'var(--shadow-sm)', padding: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ font: '700 14px var(--font-display)' }}>Registrar un egreso</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 10 }}>
+            <input value={concept} onChange={(e) => setConcept(e.target.value)} placeholder="Concepto (arriendo, nómina…)" style={fieldStyle} />
+            <input value={detail} onChange={(e) => setDetail(e.target.value)} placeholder="Detalle (opcional)" style={fieldStyle} />
+            <input value={quantity} onChange={(e) => setQuantity(e.target.value.replace(/\D/g, ''))} inputMode="numeric" placeholder="Cantidad" style={fieldStyle} />
+            <input value={formatMoneyInput(value)} onChange={(e) => setValue(e.target.value.replace(/\D/g, ''))} inputMode="numeric" placeholder="$ Valor" style={fieldStyle} />
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={fieldStyle} />
+          </div>
+          {msg ? <span style={{ fontSize: 12.5, color: 'var(--color-danger)', fontWeight: 700 }}>{msg}</span> : null}
+          <button
+            onClick={() => void submit()}
+            disabled={!canSubmit}
+            className="iw-press"
+            style={{ alignSelf: 'flex-start', height: 42, padding: '0 20px', border: 'none', borderRadius: 'var(--radius-md)', font: '700 14px var(--font-body)', background: canSubmit ? 'var(--iw-plum)' : 'var(--surface-muted)', color: canSubmit ? '#fff' : 'var(--text-muted)', cursor: canSubmit ? 'pointer' : 'not-allowed' }}
+          >
+            {saving ? 'Registrando…' : 'Registrar egreso'}
+          </button>
+        </div>
+      ) : (
+        <div style={{ fontSize: 13, color: 'var(--text-muted)', padding: '4px 2px' }}>Solo un administrador puede registrar egresos.</div>
+      )}
+
+      <TableCard headers={['Concepto', 'Detalle', 'Cant.', 'Valor', 'Fecha', 'Registró']}>
+        {expenses.length === 0 ? (
+          <EmptyRow cols={6} text="Todavía no hay egresos registrados." />
+        ) : (
+          expenses.map((e) => (
+            <tr key={e.id} style={{ borderTop: '1px solid var(--border-subtle)' }}>
+              <Td><b>{e.concept}</b></Td>
+              <Td>{e.detail || '—'}</Td>
+              <Td>{e.quantity || '—'}</Td>
+              <Td strong>{formatMoney(e.value)}</Td>
+              <Td>{formatShortDate(e.occurredAt)}</Td>
+              <Td>{e.userName}</Td>
+            </tr>
+          ))
+        )}
+      </TableCard>
+    </section>
+  )
+}
+
+function SummaryBar({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'var(--surface-sunken)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', padding: '10px 15px' }}>
+      <span style={{ fontSize: 13, color: 'var(--text-secondary)', fontWeight: 700 }}>{label}</span>
+      <span style={{ font: '700 18px var(--font-display)' }}>{value}</span>
+    </div>
+  )
+}
+
+function TableCard({ headers, children }: { headers: string[]; children: React.ReactNode }) {
+  return (
+    <div style={{ background: 'var(--surface-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-lg)', boxShadow: 'var(--shadow-sm)', overflowX: 'auto' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 560 }}>
+        <thead>
+          <tr>
+            {headers.map((h) => (
+              <th key={h} style={{ textAlign: 'left', padding: '11px 14px', font: '700 11.5px var(--font-body)', letterSpacing: '.03em', color: 'var(--text-muted)', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>{children}</tbody>
+      </table>
+    </div>
+  )
+}
+
+function Td({ children, strong }: { children: React.ReactNode; strong?: boolean }) {
+  return <td style={{ padding: '11px 14px', fontSize: 13, fontWeight: strong ? 700 : 500, color: strong ? 'var(--text-primary)' : 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{children}</td>
+}
+
+function EmptyRow({ cols, text }: { cols: number; text: string }) {
+  return (
+    <tr>
+      <td colSpan={cols} style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 }}>{text}</td>
+    </tr>
   )
 }
 

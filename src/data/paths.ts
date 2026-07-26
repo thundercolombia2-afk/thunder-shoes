@@ -43,6 +43,7 @@ export const COLLECTIONS = {
   barcodes: 'barcodes',
   movements: 'movements',
   dailyStats: 'dailyStats',
+  expenses: 'expenses',
   users: 'users',
   invites: 'invites',
 } as const
@@ -85,6 +86,10 @@ export const movementRef = (id: string): DocumentReference =>
 /** El id del documento es el dayKey: "2026-07-15". */
 export const dailyStatsRef = (dayKey: string): DocumentReference =>
   doc(db, COLLECTIONS.dailyStats, dayKey)
+
+/** Egresos cargados a mano por el administrador. */
+export const expensesRef = (): CollectionReference => collection(db, COLLECTIONS.expenses)
+export const expenseRef = (id: string): DocumentReference => doc(db, COLLECTIONS.expenses, id)
 
 // ── Personas y accesos ───────────────────────────────────────────────────────
 

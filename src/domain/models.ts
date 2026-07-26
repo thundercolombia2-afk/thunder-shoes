@@ -303,3 +303,29 @@ export interface LowStockAlert {
   stock: number
   minStock: number
 }
+
+/**
+ * Egreso: un gasto que se registra A MANO (arriendo, nómina, servicios, etc.).
+ * No sale de un movimiento de inventario; lo carga el administrador desde la
+ * vista de Ingresos y egresos. `value` es el monto total que salió de la caja.
+ */
+export interface Expense {
+  id: string
+  concept: string
+  detail: string
+  quantity: number
+  value: Money
+  occurredAt: Date
+  dayKey: string
+  userId: UserId
+  userName: string
+  createdAt: Date
+}
+
+export interface ExpenseDraft {
+  concept: string
+  detail: string
+  quantity: number
+  value: Money
+  occurredAt: Date
+}
