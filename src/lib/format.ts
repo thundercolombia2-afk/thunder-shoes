@@ -28,14 +28,13 @@ const millionsFmt = new Intl.NumberFormat('es-CO', { maximumFractionDigits: 1 })
  * que trae el valor exacto y su escala (millones / miles de millones) para el
  * tooltip. Así el número nunca queda diminuto y no se pierde el detalle.
  */
-export function moneyDisplay(value: Money | number): { text: string; title?: string } {
+export function moneyDisplay(value: Money | number): { text: string; exact: string; compact: boolean } {
   const n = Math.round(value)
-  const abs = Math.abs(n)
-  if (abs >= 1_000_000) {
-    const scale = abs >= 1_000_000_000 ? 'miles de millones' : 'millones'
-    return { text: `$${millionsFmt.format(n / 1_000_000)} M`, title: `${formatMoney(n)} · en ${scale}` }
+  const exact = formatMoney(n)
+  if (Math.abs(n) >= 1_000_000) {
+    return { text: `$${millionsFmt.format(n / 1_000_000)} M`, exact, compact: true }
   }
-  return { text: formatMoney(n) }
+  return { text: exact, exact, compact: false }
 }
 
 const dayKeyFormatter = new Intl.DateTimeFormat('en-CA', {

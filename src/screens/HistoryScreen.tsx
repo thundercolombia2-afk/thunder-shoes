@@ -150,7 +150,7 @@ export function HistoryScreen() {
           overflowX: 'auto',
         }}
       >
-        <div style={{ minWidth: 720 }}>
+        <div style={{ minWidth: 760 }}>
           <div
             style={{
               display: 'grid',
@@ -239,12 +239,15 @@ function HistoryRow({ movement: m, admin }: { movement: Movement; admin: boolean
       <span style={{ minWidth: 0 }}>
         <span
           style={{
-            display: 'block',
-            fontWeight: 600,
-            whiteSpace: 'nowrap',
+            display: '-webkit-box',
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: 'vertical',
             overflow: 'hidden',
-            textOverflow: 'ellipsis',
+            fontWeight: 600,
+            overflowWrap: 'anywhere',
+            lineHeight: 1.25,
           }}
+          title={m.snapshot.productName}
         >
           {m.snapshot.productName}
         </span>
@@ -279,8 +282,8 @@ function HistoryRow({ movement: m, admin }: { movement: Movement; admin: boolean
 
 const gridCols = (admin: boolean) =>
   admin
-    ? '92px 80px 1.4fr 46px 50px 56px 96px 88px 92px'
-    : '92px 80px 1.4fr 46px 50px 56px 96px 88px'
+    ? '92px 80px minmax(150px,1.6fr) 46px 50px 56px 96px 88px 92px'
+    : '92px 80px minmax(150px,1.6fr) 46px 50px 56px 96px 88px'
 
 function Empty({ text }: { text: string }) {
   return <div style={{ padding: 28, textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 }}>{text}</div>
