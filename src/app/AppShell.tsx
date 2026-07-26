@@ -5,6 +5,7 @@
  * solo para socios.
  */
 
+import { useState } from 'react'
 import { Navigate, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useSession } from './session'
 import { useIsMobile } from './useMediaQuery'
@@ -119,6 +120,9 @@ function MobileShell({
   onLogout: () => void
   onOpenProfile: () => void
 }) {
+  const [menuOpen, setMenuOpen] = useState(false)
+  const activeLabel = items.find((n) => n.to === activeKey)?.label ?? ''
+
   return (
     <div
       style={{
@@ -130,6 +134,7 @@ function MobileShell({
         flexDirection: 'column',
         height: '100%',
         overflow: 'hidden',
+        position: 'relative',
       }}
     >
       <header
@@ -137,67 +142,93 @@ function MobileShell({
           flex: 'none',
           display: 'flex',
           alignItems: 'center',
-          gap: 8,
-          padding: '12px 16px 10px',
+          gap: 10,
+          padding: '12px 14px 11px',
           background: 'var(--iw-plum-darkest)',
           borderBottom: '1px solid rgba(255,255,255,.08)',
         }}
       >
-        <div style={{ width: 30, height: 30, borderRadius: 9, background: 'var(--iw-yellow)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <Icon name="bolt" size={16} color="var(--iw-plum)" />
-        </div>
+        <button
+          onClick={() => setMenuOpen(true)}
+          aria-label="Abrir menú"
+          className="iw-press"
+          style={{ width: 38, height: 38, flex: 'none', borderRadius: 10, background: 'rgba(255,255,255,.1)', border: 'none', color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+        >
+          <Icon name="menu" size={22} />
+        </button>
+        <span style={{ font: '700 16px var(--font-display)', color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, minWidth: 0 }}>
+          {activeLabel}
+        </span>
         <button
           onClick={onOpenProfile}
+          aria-label="Ver perfil"
           className="iw-press"
-          style={{ display: 'flex', flexDirection: 'column', minWidth: 0, background: 'transparent', border: 'none', cursor: 'pointer', textAlign: 'left', padding: 0 }}
+          style={{ width: 34, height: 34, flex: 'none', borderRadius: '50%', background: 'var(--iw-yellow)', border: 'none', color: 'var(--iw-plum)', cursor: 'pointer', font: '700 13px var(--font-display)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
         >
-          <span style={{ font: '700 13px var(--font-display)', color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {userName}
-          </span>
-          <span style={{ fontSize: 10, color: 'var(--iw-cream)', opacity: 0.55, fontWeight: 600 }}>
-            {storeCode ? `Local ${storeCode}` : 'Bodeguero'} · ver perfil
-          </span>
+          {initials(userName) || <Icon name="user" size={18} />}
         </button>
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 12 }}>
-          {canChangeStore ? <HeaderAction icon="refresh" label="Local" onClick={onChangeStore} /> : null}
-          <HeaderAction icon="return" label="Salir" onClick={onLogout} />
-        </div>
       </header>
 
       <main className="iw-scroll" style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
         <Outlet />
       </main>
 
-      <nav style={{ flex: 'none', display: 'flex', background: 'var(--surface-card)', borderTop: '1px solid var(--border-subtle)', padding: '8px 4px 14px' }}>
-        {items.map((n) => {
-          const on = n.to === activeKey
-          return (
-            <NavLink
-              key={n.to}
-              to={n.to}
-              style={{ textDecoration: 'none', flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, padding: 4, color: on ? 'var(--iw-plum)' : 'var(--text-muted)' }}
-            >
-              <div style={{ width: '100%', display: 'flex', justifyContent: 'center', position: 'relative' }}>
-                <div style={{ width: 26, height: 3, borderRadius: 2, background: on ? 'var(--iw-yellow)' : 'transparent', position: 'absolute', top: -8 }} />
-                <Icon name={n.icon} size={22} />
+      {/* Menú lateral (hamburguesa) */}
+      {menuOpen ? (
+        <div
+          onClick={() => setMenuOpen(false)}
+          style={{ position: 'absolute', inset: 0, background: 'rgba(12,12,13,.5)', zIndex: 80, display: 'flex' }}
+        >
+          <nav
+            onClick={(e) => e.stopPropagation()}
+            className="iw-scroll"
+            style={{ width: 268, maxWidth: '82%', height: '100%', background: 'var(--iw-plum-darkest)', display: 'flex', flexDirection: 'column', padding: '16px 12px', gap: 4, overflowY: 'auto' }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '4px 8px 14px' }}>
+              <div style={{ width: 32, height: 32, borderRadius: 9, background: 'var(--iw-yellow)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <Icon name="bolt" size={17} color="var(--iw-plum)" />
               </div>
-              <span style={{ font: '700 10.5px var(--font-body)' }}>{n.label}</span>
-            </NavLink>
-          )
-        })}
-      </nav>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ font: '700 14px var(--font-display)', color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{userName}</div>
+                <div style={{ fontSize: 11, color: 'var(--iw-cream)', opacity: 0.6, fontWeight: 600 }}>{storeCode ? `Local ${storeCode}` : 'Bodeguero'}</div>
+              </div>
+            </div>
+
+            {items.map((n) => {
+              const on = n.to === activeKey
+              return (
+                <NavLink
+                  key={n.to}
+                  to={n.to}
+                  onClick={() => setMenuOpen(false)}
+                  style={{ textDecoration: 'none', display: 'flex', alignItems: 'center', gap: 12, padding: '12px 12px', borderRadius: 'var(--radius-md)', background: on ? 'rgba(255,255,255,.12)' : 'transparent', color: on ? '#fff' : 'var(--iw-cream)' }}
+                >
+                  <Icon name={n.icon} size={20} color={on ? 'var(--iw-yellow)' : 'currentColor'} />
+                  <span style={{ font: '700 14.5px var(--font-body)' }}>{n.label}</span>
+                </NavLink>
+              )
+            })}
+
+            <div style={{ marginTop: 'auto', borderTop: '1px solid rgba(255,255,255,.1)', paddingTop: 10, display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <MenuAction icon="user" label="Mi perfil" onClick={() => { setMenuOpen(false); onOpenProfile() }} />
+              {canChangeStore ? <MenuAction icon="refresh" label="Cambiar de local" onClick={() => { setMenuOpen(false); onChangeStore() }} /> : null}
+              <MenuAction icon="return" label="Cerrar sesión" onClick={() => { setMenuOpen(false); onLogout() }} />
+            </div>
+          </nav>
+        </div>
+      ) : null}
     </div>
   )
 }
 
-function HeaderAction({ icon, label, onClick }: { icon: IconName; label: string; onClick: () => void }) {
+function MenuAction({ icon, label, onClick }: { icon: IconName; label: string; onClick: () => void }) {
   return (
     <button
       onClick={onClick}
       className="iw-press"
-      style={{ cursor: 'pointer', background: 'transparent', border: 'none', display: 'flex', alignItems: 'center', gap: 5, font: '700 11px var(--font-body)', color: 'var(--iw-cream)', opacity: 0.75 }}
+      style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 12px', borderRadius: 'var(--radius-md)', background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--iw-cream)', font: '700 14px var(--font-body)', textAlign: 'left', width: '100%' }}
     >
-      <Icon name={icon} size={14} /> {label}
+      <Icon name={icon} size={18} /> {label}
     </button>
   )
 }

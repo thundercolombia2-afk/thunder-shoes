@@ -34,10 +34,6 @@ export function DashboardScreen() {
   const today: DailyStats | undefined = days.at(-1)
 
   const totalStock = useMemo(() => catalog.reduce((s, r) => s + r.totalStock, 0), [catalog])
-  const alertCount = useMemo(
-    () => catalog.reduce((s, r) => s + r.variants.filter((v) => v.stock <= v.minStock).length, 0),
-    [catalog],
-  )
 
   const mask = (value: string) => (adminUnlocked ? value : '••••')
 
@@ -54,13 +50,13 @@ export function DashboardScreen() {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 12 }}>
         <div style={{ background: 'var(--iw-plum)', color: '#fff', borderRadius: 'var(--radius-lg)', padding: '16px 18px', boxShadow: 'var(--shadow-md)' }}>
           <div style={{ fontSize: 12, opacity: 0.75, fontWeight: 700 }}>Ventas de hoy</div>
-          <div style={{ font: '700 26px var(--font-display)' }}>{formatMoney(today?.salesTotal ?? 0)}</div>
-          <div style={{ fontSize: 12, opacity: 0.8, marginTop: 4 }}>
+          <div style={{ font: '700 var(--font-display)', fontSize: 'clamp(18px, 6vw, 26px)', overflowWrap: 'anywhere' }}>{formatMoney(today?.salesTotal ?? 0)}</div>
+          <div style={{ fontSize: 11.5, opacity: 0.8, marginTop: 4, overflowWrap: 'anywhere' }}>
             {stores.map((s) => `${s.code} · ${formatMoney(today?.salesByStore[s.id] ?? 0)}`).join('   ')}
           </div>
         </div>
 
-        <PlainCard label="Stock total" value={String(totalStock)} foot={`${alertCount} alertas de stock bajo`} footColor="var(--color-danger)" />
+        <PlainCard label="Stock total" value={String(totalStock)} foot={`${catalog.length} referencias`} />
         <PlainCard label="Entradas de hoy" value={formatMoney(today?.purchasesTotal ?? 0)} foot={`${today?.purchasesCount ?? 0} ingresos de stock`} />
 
         <div
@@ -75,7 +71,7 @@ export function DashboardScreen() {
           }}
         >
           <div style={{ fontSize: 12, opacity: 0.75, fontWeight: 700 }}>Utilidad de hoy</div>
-          <div style={{ font: '700 26px var(--font-display)', filter: adminUnlocked ? 'none' : 'blur(7px)' }}>
+          <div style={{ font: '700 var(--font-display)', fontSize: 'clamp(18px, 6vw, 26px)', overflowWrap: 'anywhere', filter: adminUnlocked ? 'none' : 'blur(7px)' }}>
             {mask(formatMoney(today?.margin ?? 0))}
           </div>
           {!adminUnlocked ? (
@@ -383,9 +379,9 @@ function ExpenseFormModal({
 
 function SummaryBar({ label, value }: { label: string; value: string }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'var(--surface-sunken)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', padding: '10px 15px' }}>
-      <span style={{ fontSize: 13, color: 'var(--text-secondary)', fontWeight: 700 }}>{label}</span>
-      <span style={{ font: '700 18px var(--font-display)' }}>{value}</span>
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, background: 'var(--surface-sunken)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', padding: '10px 15px' }}>
+      <span style={{ fontSize: 13, color: 'var(--text-secondary)', fontWeight: 700, minWidth: 0 }}>{label}</span>
+      <span style={{ font: '700 var(--font-display)', fontSize: 'clamp(15px, 4.5vw, 18px)', whiteSpace: 'nowrap' }}>{value}</span>
     </div>
   )
 }
@@ -419,12 +415,12 @@ function EmptyRow({ cols, text }: { cols: number; text: string }) {
   )
 }
 
-function PlainCard({ label, value, foot, footColor }: { label: string; value: string; foot: string; footColor?: string }) {
+function PlainCard({ label, value, foot, footColor }: { label: string; value: string; foot?: string; footColor?: string }) {
   return (
     <div style={{ background: 'var(--surface-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-lg)', padding: '16px 18px', boxShadow: 'var(--shadow-sm)' }}>
       <div style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 700 }}>{label}</div>
-      <div style={{ font: '700 26px var(--font-display)' }}>{value}</div>
-      <div style={{ fontSize: 12, color: footColor ?? 'var(--text-muted)', marginTop: 4, fontWeight: footColor ? 700 : 400 }}>{foot}</div>
+      <div style={{ font: '700 var(--font-display)', fontSize: 'clamp(18px, 6vw, 26px)', overflowWrap: 'anywhere' }}>{value}</div>
+      {foot ? <div style={{ fontSize: 12, color: footColor ?? 'var(--text-muted)', marginTop: 4, fontWeight: footColor ? 700 : 400 }}>{foot}</div> : null}
     </div>
   )
 }
