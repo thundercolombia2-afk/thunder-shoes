@@ -148,7 +148,19 @@ function ClavesTab({
 
       <div style={{ background: 'var(--surface-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-lg)', padding: 18, boxShadow: 'var(--shadow-sm)', display: 'flex', flexDirection: 'column', gap: 14 }}>
         <div>
-          <div style={{ font: '700 15px var(--font-display)' }}>Generar una clave de acceso</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div style={{ font: '700 15px var(--font-display)' }}>Crear acceso para un nuevo usuario</div>
+            <InfoTip>
+              <div style={{ font: '700 13px var(--font-body)', marginBottom: 6 }}>¿Cómo se crea un usuario?</div>
+              <ol style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 5 }}>
+                <li>Elige el <b>rol</b> y el <b>local</b> o la <b>bodega</b> a la que quedará asignado.</li>
+                <li>Presiona <b>Generar clave</b>: aparece un código (ej. THR-XXXX).</li>
+                <li><b>Comparte ese código</b> con la persona.</li>
+                <li>Ella abre la app → <b>Crear cuenta</b>, pone su correo y contraseña y pega el código.</li>
+                <li>Queda registrada con el rol y la asignación que fijaste. El código sirve <b>una sola vez</b>.</li>
+              </ol>
+            </InfoTip>
+          </div>
           <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--text-muted)' }}>
             Tú fijas el rol y el local o la bodega. Quien se registre con el código no elige nada:
             hereda lo que pongas aquí.
@@ -206,6 +218,34 @@ function ClavesTab({
         </div>
       ) : null}
     </>
+  )
+}
+
+/** Botón "ⓘ" que muestra una explicación al pasar el mouse o al tocar. */
+function InfoTip({ children }: { children: React.ReactNode }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <span
+      style={{ position: 'relative', display: 'inline-flex' }}
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
+      <button
+        onClick={() => setOpen((o) => !o)}
+        aria-label="Cómo funciona"
+        style={{ width: 20, height: 20, borderRadius: '50%', border: '1.5px solid var(--iw-plum)', background: 'transparent', color: 'var(--iw-plum)', cursor: 'pointer', font: '700 12px var(--font-body)', lineHeight: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+      >
+        i
+      </button>
+      {open ? (
+        <span
+          role="tooltip"
+          style={{ position: 'absolute', top: '135%', left: 0, zIndex: 20, width: 280, maxWidth: '80vw', background: 'var(--surface-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', boxShadow: 'var(--shadow-lg)', padding: '12px 14px', fontSize: 12.5, color: 'var(--text-secondary)', lineHeight: 1.5, fontWeight: 500 }}
+        >
+          {children}
+        </span>
+      ) : null}
+    </span>
   )
 }
 

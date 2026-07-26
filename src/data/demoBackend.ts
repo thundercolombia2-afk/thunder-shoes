@@ -587,6 +587,27 @@ export const demoBackend = {
     notifyExpenses()
     return Promise.resolve()
   },
+  updateExpense(id: string, draft: ExpenseDraft): Promise<void> {
+    const e = expenses.find((x) => x.id === id)
+    if (e) {
+      e.concept = draft.concept
+      e.detail = draft.detail
+      e.quantity = draft.quantity
+      e.value = draft.value
+      e.occurredAt = draft.occurredAt
+      e.dayKey = toDayKey(draft.occurredAt)
+      notifyExpenses()
+    }
+    return Promise.resolve()
+  },
+  deleteExpense(id: string): Promise<void> {
+    const i = expenses.findIndex((x) => x.id === id)
+    if (i >= 0) {
+      expenses.splice(i, 1)
+      notifyExpenses()
+    }
+    return Promise.resolve()
+  },
 
   // Bodegas
   listBodegas(): Promise<Bodega[]> {

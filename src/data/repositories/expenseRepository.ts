@@ -4,8 +4,8 @@
  * leen; para corregir un error se registra otro egreso o lo borra la dueña.
  */
 
-import { addDoc, onSnapshot, orderBy, query, Timestamp, type Unsubscribe } from 'firebase/firestore'
-import { expensesRef } from '../paths'
+import { addDoc, deleteDoc, onSnapshot, orderBy, query, Timestamp, updateDoc, type Unsubscribe } from 'firebase/firestore'
+import { expenseRef, expensesRef } from '../paths'
 import { expenseFromDoc } from '../converters'
 import { toDayKey } from '@/lib/format'
 import type { Expense, ExpenseDraft } from '@/domain/models'
@@ -43,5 +43,24 @@ export const expenseRepository = {
       userName: actor.userName,
       createdAt: Timestamp.now(),
     })
+  },
+
+  /** Edita un egreso ya registrado (concepto, detalle, cantidad, valor, fecha). */
+  async update(id: string, draft: ExpenseDraft): Promise<void> {
+    if (DEMO) return demoBackend.updateExpense(id, draft)
+    await updateDoc(expenseRef(id), {
+      concept: draft.concept,
+      detail: draft.detail,
+      quantity: draft.quantity,
+      value: draft.value,
+      occurredAt: Timestamp.fromDate(draft.occurredAt),
+      dayKey: toDayKey(draft.occurredAt),
+    })
+  },
+
+  /** Elimina un egreso. */
+  async remove(id: string): Promise<void> {
+    if (DEMO) return demoBackend.deleteExpense(id)
+    await deleteDoc(expenseRef(id))
   },
 }

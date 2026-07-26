@@ -177,8 +177,14 @@ service cloud.firestore {
         && request.resource.data.userId == uid()
         && request.resource.data.value is number
         && request.resource.data.quantity is int;
-      allow update: if false;
-      allow delete: if isOwner();
+      // Editar/eliminar: cualquier socio (los egresos son un libro que administra
+      // el negocio). No se puede cambiar quién lo registró ni cuándo.
+      allow update: if isSocio()
+        && request.resource.data.userId == resource.data.userId
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.value is number
+        && request.resource.data.quantity is int;
+      allow delete: if isSocio();
     }
 
     // ── Libro mayor (INMUTABLE, firmado por el uid real) ──────────────────────

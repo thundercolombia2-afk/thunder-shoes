@@ -25,6 +25,7 @@ export type IconName =
   | 'download'
   | 'refresh'
   | 'edit'
+  | 'trash'
   | 'shoe'
   | 'warning'
   | 'calendar'
@@ -68,6 +69,7 @@ const PATHS: Record<IconName, string> = {
   download: 'M12 3v12M7 10l5 5 5-5M5 21h14',
   refresh: 'M3 12a9 9 0 1 0 3-6.7L3 8M3 4v4h4',
   edit: 'M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z',
+  trash: 'M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1L5 6M10 11v6M14 11v6',
   shoe: 'M3 13l2-5h14l2 5v5a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1H7a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1zM5 8V6a2 2 0 0 1 2-2h4',
   warning: 'M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9v4M12 17h.01',
   calendar: 'M3 5h18v16H3zM3 9h18M8 3v4M16 3v4',
