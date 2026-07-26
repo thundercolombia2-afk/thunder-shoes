@@ -28,18 +28,11 @@ export function InventoryScreen() {
   const [bodegas, setBodegas] = useState<Bodega[]>([])
   useEffect(() => bodegaRepository.subscribe(setBodegas), [])
 
-  // Edición de tallas (solo quien administra): permite QUITAR de una referencia
-  // una talla que no se maneja, siempre que esté en cero. Una referencia a la vez.
-  const [editingId, setEditingId] = useState<string | null>(null)
-  const [rowNotice, setRowNotice] = useState('')
-  const removeSize = async (productId: ProductId, size: Size) => {
-    setRowNotice('')
-    try {
-      await catalogRepository.removeVariant(productId, size)
-    } catch (e) {
-      setRowNotice(e instanceof Error ? e.message : 'No se pudo quitar la talla.')
-    }
-  }
+  // Referencia abierta en el modal de detalle (por id). null = ninguna.
+  const [openId, setOpenId] = useState<string | null>(null)
+  // Quitar de una referencia una talla que no se maneja (solo admin, y solo si
+  // está en cero). Lanza el error para que el modal lo muestre.
+  const removeSize = (productId: ProductId, size: Size) => catalogRepository.removeVariant(productId, size)
 
   // Vista del VENDEDOR: quien no ve costos (empleado) y está parado en un local
   // ve el inventario centrado en SU local: lo que puede vender ya. El total y las
@@ -147,12 +140,6 @@ export function InventoryScreen() {
         <StatCard label="Stock bajo" value={alertCount} danger />
       </div>
 
-      {rowNotice ? (
-        <div style={{ background: 'rgba(224,52,29,.1)', border: '1px solid rgba(224,52,29,.3)', borderRadius: 'var(--radius-md)', padding: '10px 14px', color: 'var(--color-danger)', fontSize: 13, fontWeight: 700 }}>
-          {rowNotice}
-        </div>
-      ) : null}
-
       <div
         style={{
           background: 'var(--surface-card)',
@@ -170,212 +157,225 @@ export function InventoryScreen() {
           <Empty text={term ? 'Sin resultados para tu búsqueda.' : 'No hay referencias todavía. Crea una con "Nueva".'} />
         ) : (
           rows.map((r) => (
-            <InventoryRow
+            <ListRow
               key={r.product.id}
               row={r}
-              admin={seeCosts}
-              locName={locName}
-              scopeKey={scopeKey}
-              editing={editingId === r.product.id}
-              onToggleEdit={() => {
-                setRowNotice('')
-                setEditingId((prev) => (prev === r.product.id ? null : r.product.id))
-              }}
-              onRemoveSize={removeSize}
+              scopeStock={scopeStockOf(r)}
+              onOpen={() => setOpenId(r.product.id)}
             />
           ))
         )}
       </div>
+
+      {openId ? (
+        (() => {
+          const openRow = catalog.find((r) => r.product.id === openId)
+          if (!openRow) return null
+          return (
+            <ProductModal
+              row={openRow}
+              admin={seeCosts}
+              locName={locName}
+              onRemoveSize={removeSize}
+              onClose={() => setOpenId(null)}
+            />
+          )
+        })()
+      ) : null}
     </InventoryLayout>
   )
 }
 
-function InventoryRow({
+/** Fila del inventario: solo el nombre (con una pista de estado) y clickable. */
+function ListRow({ row, scopeStock, onOpen }: { row: ProductWithVariants; scopeStock: number; onOpen: () => void }) {
+  const st = productStatus(scopeStock, row.product.minStock)
+  const dot = st === 'out' ? 'var(--color-danger)' : st === 'low' ? 'var(--iw-amber)' : 'var(--color-success)'
+  return (
+    <button
+      onClick={onOpen}
+      className="iw-row"
+      style={{
+        width: '100%',
+        textAlign: 'left',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 12,
+        padding: '15px 16px',
+        borderBottom: '1px solid var(--border-subtle)',
+        background: 'transparent',
+        border: 'none',
+        cursor: 'pointer',
+      }}
+    >
+      <span style={{ width: 9, height: 9, borderRadius: '50%', background: dot, flex: 'none' }} aria-hidden />
+      <span style={{ flex: 1, minWidth: 0, font: '700 15px var(--font-display)', color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+        {row.product.name}
+      </span>
+      <span aria-hidden style={{ color: 'var(--text-muted)', font: '700 18px var(--font-display)', lineHeight: 1 }}>›</span>
+    </button>
+  )
+}
+
+/** Modal de detalle de una referencia: tallas, ubicaciones (bodegas/locales),
+ *  fechas y (para admin) edición de tallas. */
+function ProductModal({
   row,
   admin,
   locName,
-  scopeKey,
-  editing,
-  onToggleEdit,
   onRemoveSize,
+  onClose,
 }: {
   row: ProductWithVariants
   admin: boolean
   locName: (key: string) => string
-  scopeKey: string | null
-  editing: boolean
-  onToggleEdit: () => void
-  onRemoveSize: (productId: ProductId, size: Size) => void
+  onRemoveSize: (productId: ProductId, size: Size) => Promise<void>
+  onClose: () => void
 }) {
   const { product, variants, totalStock } = row
+  const [editing, setEditing] = useState(false)
+  const [notice, setNotice] = useState('')
 
-  // Alcance activo: en vista de vendedor cuenta SU local; si no, el total.
-  const sizeStock = (v: (typeof variants)[number]): number =>
-    scopeKey ? stockAt(v.stockByLocation, scopeKey) : v.stock
-  const scopeTotal = scopeKey ? variants.reduce((sum, v) => sum + sizeStock(v), 0) : totalStock
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
 
-  const status = statusStyles(productStatus(scopeTotal, product.minStock))
-  const totalColor = scopeTotal === 0 ? 'var(--color-danger)' : scopeTotal <= product.minStock * 3 ? 'var(--iw-amber)' : 'var(--text-primary)'
+  const remove = async (size: Size) => {
+    setNotice('')
+    try {
+      await onRemoveSize(product.id, size)
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : 'No se pudo quitar la talla.')
+    }
+  }
 
-  // Desglose por ubicación: suma el stock de todas las tallas en cada bodega/local.
-  // En vista de vendedor se EXCLUYE su propio local (ya es el número grande): los
-  // chips quedan como "lo que hay en bodega / en otros locales" — un dato de acción
-  // (pedir un traslado), no ruido.
+  const status = statusStyles(productStatus(totalStock, product.minStock))
+
+  // Existencias por ubicación (todas: bodegas y locales), de mayor a menor.
   const byLocation = new Map<string, number>()
   for (const v of variants) {
     for (const [key, qty] of Object.entries(v.stockByLocation)) {
-      if (qty && key !== scopeKey) byLocation.set(key, (byLocation.get(key) ?? 0) + qty)
+      if (qty) byLocation.set(key, (byLocation.get(key) ?? 0) + qty)
     }
   }
-  const locEntries = [...byLocation.entries()]
-    .filter(([, qty]) => qty > 0)
-    .sort((a, b) => b[1] - a[1])
+  const locEntries = [...byLocation.entries()].filter(([, q]) => q > 0).sort((a, b) => b[1] - a[1])
+
+  const fmtDate = (d: Date) =>
+    d.getFullYear() > 1970 ? d.toLocaleDateString('es-CO', { day: 'numeric', month: 'short', year: 'numeric' }) : '—'
 
   return (
-    <div className="iw-row" style={{ padding: '14px 16px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', flexDirection: 'column', gap: 10 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ font: '700 15px var(--font-display)', color: 'var(--text-primary)' }}>{product.name}</div>
-          <div style={{ font: '600 11px ui-monospace,monospace', color: 'var(--text-muted)' }}>
-            {product.sku} · {formatMoney(product.price)}
-            {admin ? <span style={{ color: 'var(--iw-orange)' }}> · costo {formatMoney(product.cost)}</span> : null}
+    <div
+      onClick={onClose}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(12,12,13,.55)', backdropFilter: 'blur(2px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60, padding: 20, overflowY: 'auto' }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{ width: 520, maxWidth: '100%', maxHeight: '90vh', overflowY: 'auto', background: 'var(--surface-card)', borderRadius: 'var(--radius-2xl)', boxShadow: 'var(--shadow-lg)', padding: '22px 24px 24px', boxSizing: 'border-box' }}
+      >
+        {/* Encabezado */}
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ font: '700 20px var(--font-display)' }}>{product.name}</div>
+            <div style={{ font: '600 12px ui-monospace,monospace', color: 'var(--text-muted)', marginTop: 3 }}>
+              {product.sku} · {formatMoney(product.price)}
+              {admin ? <span style={{ color: 'var(--iw-orange)' }}> · costo {formatMoney(product.cost)}</span> : null}
+            </div>
           </div>
-        </div>
-        {admin ? (
-          <button
-            onClick={onToggleEdit}
-            className="iw-press"
-            style={{
-              cursor: 'pointer',
-              background: editing ? 'var(--iw-plum)' : 'transparent',
-              color: editing ? '#fff' : 'var(--text-muted)',
-              border: `1px solid ${editing ? 'var(--iw-plum)' : 'var(--border-subtle)'}`,
-              borderRadius: 'var(--radius-pill)',
-              padding: '4px 11px',
-              font: '700 11px var(--font-body)',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            {editing ? 'Listo' : 'Editar tallas'}
+          <button onClick={onClose} aria-label="Cerrar" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 22, lineHeight: 1 }}>
+            ✕
           </button>
-        ) : null}
-        <span
-          style={{
-            background: status.bg,
-            color: status.color,
-            font: '700 11px var(--font-body)',
-            padding: '4px 11px',
-            borderRadius: 'var(--radius-pill)',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {status.label}
-        </span>
-        <div style={{ textAlign: 'right', minWidth: 52 }}>
-          <div style={{ font: '700 18px var(--font-display)', color: totalColor }}>{scopeTotal}</div>
-          <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-            {scopeKey ? (totalStock > scopeTotal ? `sistema ${totalStock}` : 'aquí') : `mín ${product.minStock}`}
+        </div>
+
+        {/* Estado + stock total */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 14 }}>
+          <span style={{ background: status.bg, color: status.color, font: '700 11px var(--font-body)', padding: '4px 11px', borderRadius: 'var(--radius-pill)' }}>
+            {status.label}
+          </span>
+          <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
+            <div style={{ font: '700 22px var(--font-display)', color: totalStock === 0 ? 'var(--color-danger)' : 'var(--text-primary)' }}>{totalStock}</div>
+            <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>en total · mín {product.minStock}</div>
           </div>
         </div>
-      </div>
 
-      {locEntries.length > 0 ? (
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          {locEntries.map(([key, qty]) => {
-            const isBodega = key.startsWith('b:')
-            return (
-              <span
-                key={key}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 5,
-                  padding: '3px 9px',
-                  borderRadius: 'var(--radius-pill)',
-                  fontSize: 11.5,
-                  fontWeight: 700,
-                  background: isBodega ? 'rgba(90,42,90,.1)' : 'var(--surface-sunken)',
-                  color: isBodega ? 'var(--iw-plum)' : 'var(--text-secondary)',
-                  border: '1px solid var(--border-subtle)',
-                }}
-              >
-                {locName(key)} <span style={{ font: '700 12px var(--font-display)' }}>{qty}</span>
-              </span>
-            )
-          })}
-        </div>
-      ) : null}
-
-      {/* Solo se muestran las tallas CREADAS de la referencia. Una talla que no se
-          maneja no aparece (no es ruido). En modo edición, las que están en cero
-          se pueden quitar con la ✕. */}
-      <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
-        {variants.length === 0 ? (
-          <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>Esta referencia no tiene tallas.</span>
+        {/* Existencias por ubicación */}
+        <div style={{ marginTop: 18, font: '700 13px var(--font-body)', color: 'var(--text-secondary)' }}>Existencias por ubicación</div>
+        {locEntries.length === 0 ? (
+          <div style={{ marginTop: 8, fontSize: 13, color: 'var(--text-muted)' }}>Sin existencias en ninguna ubicación.</div>
         ) : (
-          variants.map((variant) => {
-            const stock = sizeStock(variant)
-            const st = variantStatus(stock, variant.minStock)
-            const bg = st === 'out' ? 'rgba(224,52,29,.08)' : st === 'low' ? 'rgba(199,146,0,.12)' : 'var(--iw-off-white)'
-            const border = st === 'low' || st === 'out' ? 'rgba(199,146,0,.4)' : 'var(--border-subtle)'
-            const removable = editing && variant.stock === 0
-            return (
-              <div
-                key={variant.size}
-                style={{
-                  position: 'relative',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  minWidth: 34,
-                  background: bg,
-                  border: `1px solid ${removable ? 'rgba(224,52,29,.5)' : border}`,
-                  borderRadius: 8,
-                  padding: '3px 6px',
-                }}
-              >
-                <span style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 700 }}>{variant.size}</span>
-                <span style={{ font: '700 13px var(--font-display)', color: cellColor(stock, variant.minStock) }}>
-                  {stock}
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+            {locEntries.map(([key, qty]) => {
+              const isBodega = key.startsWith('b:')
+              return (
+                <span key={key} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '4px 10px', borderRadius: 'var(--radius-pill)', fontSize: 12, fontWeight: 700, background: isBodega ? 'rgba(90,42,90,.1)' : 'var(--surface-sunken)', color: isBodega ? 'var(--iw-plum)' : 'var(--text-secondary)', border: '1px solid var(--border-subtle)' }}>
+                  {locName(key)} <span style={{ font: '700 12px var(--font-display)' }}>{qty}</span>
                 </span>
-                {removable ? (
-                  <button
-                    onClick={() => onRemoveSize(product.id, variant.size)}
-                    aria-label={`Quitar talla ${variant.size}`}
-                    title={`Quitar talla ${variant.size}`}
-                    style={{
-                      position: 'absolute',
-                      top: -7,
-                      right: -7,
-                      width: 18,
-                      height: 18,
-                      borderRadius: '50%',
-                      border: 'none',
-                      background: 'var(--color-danger)',
-                      color: '#fff',
-                      cursor: 'pointer',
-                      font: '700 11px var(--font-body)',
-                      lineHeight: 1,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                    }}
-                  >
-                    ✕
-                  </button>
-                ) : null}
-              </div>
-            )
-          })
+              )
+            })}
+          </div>
         )}
-      </div>
 
-      {editing ? (
-        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-          Quita con la ✕ las tallas que no manejas. Solo se pueden quitar las que están en cero; si una tiene stock,
-          primero sácala del inventario.
-        </span>
-      ) : null}
+        {/* Tallas */}
+        <div style={{ marginTop: 18, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ font: '700 13px var(--font-body)', color: 'var(--text-secondary)', flex: 1 }}>Tallas y existencias</span>
+          {admin ? (
+            <button
+              onClick={() => { setNotice(''); setEditing((v) => !v) }}
+              className="iw-press"
+              style={{ cursor: 'pointer', background: editing ? 'var(--iw-plum)' : 'transparent', color: editing ? '#fff' : 'var(--text-muted)', border: `1px solid ${editing ? 'var(--iw-plum)' : 'var(--border-subtle)'}`, borderRadius: 'var(--radius-pill)', padding: '4px 11px', font: '700 11px var(--font-body)' }}
+            >
+              {editing ? 'Listo' : 'Editar tallas'}
+            </button>
+          ) : null}
+        </div>
+        <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginTop: 8 }}>
+          {variants.length === 0 ? (
+            <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>Esta referencia no tiene tallas.</span>
+          ) : (
+            variants.map((variant) => {
+              const st = variantStatus(variant.stock, variant.minStock)
+              const bg = st === 'out' ? 'rgba(224,52,29,.08)' : st === 'low' ? 'rgba(199,146,0,.12)' : 'var(--iw-off-white)'
+              const border = st === 'low' || st === 'out' ? 'rgba(199,146,0,.4)' : 'var(--border-subtle)'
+              const removable = editing && variant.stock === 0
+              return (
+                <div key={variant.size} style={{ position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 38, background: bg, border: `1px solid ${removable ? 'rgba(224,52,29,.5)' : border}`, borderRadius: 8, padding: '4px 8px' }}>
+                  <span style={{ fontSize: 10.5, color: 'var(--text-muted)', fontWeight: 700 }}>{variant.size}</span>
+                  <span style={{ font: '700 14px var(--font-display)', color: cellColor(variant.stock, variant.minStock) }}>{variant.stock}</span>
+                  {removable ? (
+                    <button
+                      onClick={() => void remove(variant.size)}
+                      aria-label={`Quitar talla ${variant.size}`}
+                      title={`Quitar talla ${variant.size}`}
+                      style={{ position: 'absolute', top: -7, right: -7, width: 18, height: 18, borderRadius: '50%', border: 'none', background: 'var(--color-danger)', color: '#fff', cursor: 'pointer', font: '700 11px var(--font-body)', lineHeight: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                    >
+                      ✕
+                    </button>
+                  ) : null}
+                </div>
+              )
+            })
+          )}
+        </div>
+        {editing ? (
+          <span style={{ display: 'block', marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>
+            Quita con la ✕ las tallas que no manejas. Solo las que están en cero; si una tiene stock, primero sácala del inventario.
+          </span>
+        ) : null}
+        {notice ? (
+          <div style={{ marginTop: 10, background: 'rgba(224,52,29,.1)', border: '1px solid rgba(224,52,29,.3)', borderRadius: 'var(--radius-md)', padding: '9px 12px', color: 'var(--color-danger)', fontSize: 12.5, fontWeight: 700 }}>
+            {notice}
+          </div>
+        ) : null}
+
+        {/* Detalles */}
+        <div style={{ marginTop: 18, paddingTop: 14, borderTop: '1px solid var(--border-subtle)', display: 'flex', flexWrap: 'wrap', gap: '6px 24px', fontSize: 12.5, color: 'var(--text-muted)' }}>
+          <span>Marca: <b style={{ color: 'var(--text-secondary)' }}>{product.brand || '—'}</b></span>
+          <span>Creada: <b style={{ color: 'var(--text-secondary)' }}>{fmtDate(product.createdAt)}</b></span>
+          <span>Actualizada: <b style={{ color: 'var(--text-secondary)' }}>{fmtDate(product.updatedAt)}</b></span>
+        </div>
+      </div>
     </div>
   )
 }

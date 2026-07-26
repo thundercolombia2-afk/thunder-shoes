@@ -17,6 +17,7 @@ import {
 } from '@/domain/models'
 import type { Sale } from '@/domain/sales'
 import { movementRepository } from '@/data/repositories/movementRepository'
+import type { ProductWithVariants } from '@/data/repositories/catalogRepository'
 import { formatMoney, formatMoneyInput, formatShortDate, formatTime, parseMoneyInput } from '@/lib/format'
 import type { CartLine } from '@/app/cart'
 
@@ -379,12 +380,19 @@ export function CobroModal({
  */
 export function DevolucionModal({
   fallback,
+  catalog,
+  localStockOf,
   busy,
   error,
   onClose,
   onConfirm,
+  onExchange,
 }: {
   fallback: CartLine | null
+  /** Catálogo en vivo, para elegir el par de cambio. */
+  catalog: ProductWithVariants[]
+  /** Stock de una variante en el local actual (tope del par de cambio). */
+  localStockOf: (variantId: string) => number
   busy: boolean
   error: string
   onClose: () => void
@@ -392,6 +400,12 @@ export function DevolucionModal({
     sale: Sale | null,
     items: { variantId: VariantId; quantity: number }[],
     reason: ReturnReason,
+  ) => void
+  onExchange: (
+    sale: Sale | null,
+    returnItems: { variantId: VariantId; quantity: number }[],
+    reason: ReturnReason,
+    replacement: { variantId: VariantId; quantity: number; payment: string },
   ) => void
 }) {
   const [results, setResults] = useState<Sale[] | null>(null)
@@ -402,6 +416,14 @@ export function DevolucionModal({
   const [reason, setReason] = useState<ReturnReason>('Talla incorrecta')
   /** `true` cuando se devuelve el par escaneado, sin venta asociada. */
   const [loose, setLoose] = useState(false)
+
+  // ── Cambio: entregar otro par a cambio (mismo precio o mayor) ──────────────
+  const [exchange, setExchange] = useState(false)
+  const [replTerm, setReplTerm] = useState('')
+  const [replVariantId, setReplVariantId] = useState<VariantId | null>(null)
+  const [replQty, setReplQty] = useState(1)
+  const [diffPayment, setDiffPayment] = useState<PaymentMethod>('Efectivo')
+  const [diffOther, setDiffOther] = useState('')
 
   // Al abrir, se buscan solas las ventas que incluyeron el par escaneado.
   useEffect(() => {
@@ -463,6 +485,34 @@ export function DevolucionModal({
   )
   const units = selectedLines.reduce((sum, l) => sum + (quantities[String(l.variantId)] ?? 0), 0)
   const chosen = sale !== null || loose
+
+  // Candidatos para el par de cambio: variantes con stock en el local actual.
+  const replCandidates = (() => {
+    const t = replTerm.trim().toLowerCase()
+    const out: { variantId: VariantId; name: string; sku: string; size: number; price: number; stock: number }[] = []
+    for (const r of catalog) {
+      if (t && !r.product.name.toLowerCase().includes(t) && !r.product.sku.toLowerCase().includes(t)) continue
+      for (const v of r.variants) {
+        const stock = localStockOf(String(v.id))
+        if (stock > 0) out.push({ variantId: v.id, name: r.product.name, sku: r.product.sku, size: v.size, price: r.product.price, stock })
+      }
+    }
+    return out.slice(0, 8)
+  })()
+  const repl = (() => {
+    for (const r of catalog) {
+      const v = r.variants.find((x) => x.id === replVariantId)
+      if (v) return { variantId: v.id, name: r.product.name, size: v.size, price: r.product.price, stock: localStockOf(String(v.id)) }
+    }
+    return null
+  })()
+  const replValue = repl ? repl.price * replQty : 0
+  const difference = replValue - total // ≥ 0 exigido: el cambio nunca devuelve plata
+  const replCheaper = exchange && repl !== null && replValue < total
+  const diffOtherMissing = difference > 0 && diffPayment === 'Otro' && diffOther.trim().length === 0
+  const diffPaymentValue = diffPayment === 'Otro' && diffOther.trim() ? diffOther.trim() : diffPayment
+  const exchangeReady =
+    exchange && repl !== null && replQty >= 1 && replQty <= repl.stock && !replCheaper && !diffOtherMissing
 
   return (
     <Overlay onClose={onClose} width={520}>
@@ -687,6 +737,105 @@ export function DevolucionModal({
             <span style={{ font: '700 20px var(--font-display)' }}>{formatMoney(total)}</span>
           </div>
 
+          {/* ── Cambio: entregar otro par ─────────────────────────────────── */}
+          <label style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={exchange}
+              onChange={(e) => setExchange(e.target.checked)}
+              style={{ width: 18, height: 18, accentColor: 'var(--iw-plum)', cursor: 'pointer' }}
+            />
+            <span style={{ font: '700 14px var(--font-body)', color: 'var(--text-primary)' }}>
+              Entregar otro par a cambio <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>(mismo precio o mayor)</span>
+            </span>
+          </label>
+
+          {exchange ? (
+            <div style={{ marginTop: 12, border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-lg)', padding: 14, display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {!repl ? (
+                <>
+                  <input
+                    value={replTerm}
+                    onChange={(e) => setReplTerm(e.target.value)}
+                    placeholder="Busca el par que le vas a dar…"
+                    autoFocus
+                    style={inputStyle}
+                  />
+                  {replCandidates.length === 0 ? (
+                    <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>
+                      {replTerm.trim() ? 'Sin resultados con stock en tu local.' : 'Escribe el nombre o código del par de cambio.'}
+                    </span>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 200, overflowY: 'auto' }}>
+                      {replCandidates.map((c) => (
+                        <button
+                          key={c.variantId}
+                          onClick={() => {
+                            setReplVariantId(c.variantId)
+                            setReplQty(1)
+                          }}
+                          className="iw-row"
+                          style={{ display: 'flex', alignItems: 'center', gap: 10, textAlign: 'left', background: 'var(--surface-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', padding: '9px 12px', cursor: 'pointer' }}
+                        >
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ font: '700 13.5px var(--font-display)' }}>{c.name} · T{c.size}</div>
+                            <div style={{ fontSize: 11.5, color: 'var(--text-muted)' }}>{c.sku} · {c.stock} en tu local</div>
+                          </div>
+                          <span style={{ font: '700 13px var(--font-display)', whiteSpace: 'nowrap' }}>{formatMoney(money(c.price))}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 700, letterSpacing: '.06em' }}>PAR DE CAMBIO</div>
+                      <div style={{ font: '700 14.5px var(--font-display)', marginTop: 2 }}>{repl.name} · T{repl.size}</div>
+                      <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>{formatMoney(money(repl.price))} · {repl.stock} en tu local</div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+                      <button onClick={() => setReplQty((q) => Math.max(1, q - 1))} style={stepStyle} aria-label="Quitar uno">−</button>
+                      <span style={{ minWidth: 20, textAlign: 'center', font: '700 17px var(--font-display)' }}>{replQty}</span>
+                      <button onClick={() => setReplQty((q) => Math.min(repl.stock, q + 1))} style={stepStyle} aria-label="Agregar uno">+</button>
+                    </div>
+                    <button
+                      onClick={() => { setReplVariantId(null); setReplTerm('') }}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', font: '700 12px var(--font-body)' }}
+                    >
+                      Cambiar
+                    </button>
+                  </div>
+
+                  {replCheaper ? (
+                    <div style={{ background: 'rgba(224,52,29,.1)', border: '1px solid rgba(224,52,29,.3)', borderRadius: 'var(--radius-md)', padding: '9px 12px', color: 'var(--color-danger)', fontSize: 12.5, fontWeight: 700 }}>
+                      El par de cambio debe valer igual o más que el devuelto ({formatMoney(total)}). No se devuelve dinero.
+                    </div>
+                  ) : difference > 0 ? (
+                    <>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'rgba(255,209,0,.16)', border: '1px solid rgba(255,209,0,.5)', borderRadius: 'var(--radius-md)', padding: '10px 13px' }}>
+                        <span style={{ fontSize: 14, color: 'var(--text-secondary)', fontWeight: 700 }}>Diferencia a cobrar</span>
+                        <span style={{ font: '700 20px var(--font-display)' }}>{formatMoney(money(difference))}</span>
+                      </div>
+                      <div>
+                        <label style={{ ...labelStyle, fontSize: 11.5, letterSpacing: '.1em', color: 'var(--text-muted)' }}>MÉTODO DE PAGO DE LA DIFERENCIA</label>
+                        <select value={diffPayment} onChange={(e) => setDiffPayment(e.target.value as PaymentMethod)} style={{ ...inputStyle, cursor: 'pointer' }}>
+                          {PAYMENT_METHODS.map((m) => (<option key={m} value={m}>{m}</option>))}
+                        </select>
+                      </div>
+                      {diffPayment === 'Otro' ? (
+                        <input value={diffOther} onChange={(e) => setDiffOther(e.target.value)} placeholder="¿Qué medio de pago fue?" style={inputStyle} />
+                      ) : null}
+                    </>
+                  ) : (
+                    <div style={{ fontSize: 13, color: 'var(--color-success)', fontWeight: 700 }}>Mismo valor · sin diferencia a cobrar.</div>
+                  )}
+                </>
+              )}
+            </div>
+          ) : null}
+
           <ErrorNote text={error} />
 
           <Actions>
@@ -698,32 +847,39 @@ export function DevolucionModal({
                 setQuantities({})
               }}
             />
-            <button
-              onClick={() =>
-                onConfirm(
-                  sale,
-                  selectedLines
-                    .map((l) => ({ variantId: l.variantId, quantity: quantities[String(l.variantId)] ?? 0 }))
-                    .filter((i) => i.quantity > 0),
-                  reason,
-                )
+            {(() => {
+              const returnItems = selectedLines
+                .map((l) => ({ variantId: l.variantId, quantity: quantities[String(l.variantId)] ?? 0 }))
+                .filter((i) => i.quantity > 0)
+              const disabled = busy || units === 0 || (exchange && !exchangeReady)
+              const submit = () => {
+                if (exchange && repl) {
+                  onExchange(sale, returnItems, reason, { variantId: repl.variantId, quantity: replQty, payment: diffPaymentValue })
+                } else {
+                  onConfirm(sale, returnItems, reason)
+                }
               }
-              disabled={busy || units === 0}
-              className="iw-press"
-              style={{
-                flex: 1.2,
-                height: 48,
-                background: 'var(--iw-plum)',
-                color: '#fff',
-                border: 'none',
-                borderRadius: 'var(--radius-lg)',
-                font: '700 15px var(--font-body)',
-                cursor: busy || units === 0 ? 'not-allowed' : 'pointer',
-                opacity: busy || units === 0 ? 0.5 : 1,
-              }}
-            >
-              {busy ? 'Registrando…' : 'Confirmar devolución'}
-            </button>
+              return (
+                <button
+                  onClick={submit}
+                  disabled={disabled}
+                  className="iw-press"
+                  style={{
+                    flex: 1.2,
+                    height: 48,
+                    background: 'var(--iw-plum)',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: 'var(--radius-lg)',
+                    font: '700 15px var(--font-body)',
+                    cursor: disabled ? 'not-allowed' : 'pointer',
+                    opacity: disabled ? 0.5 : 1,
+                  }}
+                >
+                  {busy ? 'Registrando…' : exchange ? 'Registrar cambio' : 'Confirmar devolución'}
+                </button>
+              )
+            })()}
           </Actions>
         </>
       )}

@@ -220,6 +220,53 @@ export function ScanScreen() {
   }
 
   /**
+   * Cambio: el cliente devuelve un par y se lleva otro (mismo precio o mayor).
+   * Se registran DOS operaciones: la devolución del par que trae (vuelve al
+   * inventario del local) y la venta del par de cambio (sale del local). La
+   * diferencia, si el nuevo vale más, se cobra en esa venta. Nunca se devuelve
+   * dinero. Se hace la devolución PRIMERO: si por carrera fallara la venta, el
+   * estado queda limpio (el par devuelto ya está en stock) en vez de haber
+   * entregado un par sin registro.
+   */
+  const registerExchange = async (
+    sale: Sale | null,
+    returnItems: { variantId: VariantId; quantity: number }[],
+    reason: ReturnReason,
+    replacement: { variantId: VariantId; quantity: number; payment: string },
+  ) => {
+    if (!actor || returnItems.length === 0) return
+    setBusy(true)
+    setDialogError('')
+    try {
+      await movementRepository.recordMany(
+        returnItems.map((i) => ({ type: 'return' as const, ...i, returnReason: reason })),
+        actor,
+        sale
+          ? {
+              payment: sale.payment,
+              saleId: sale.saleId,
+              ...(sale.customerName ? { customerName: sale.customerName } : {}),
+              ...(sale.customerPhone ? { customerPhone: sale.customerPhone } : {}),
+            }
+          : { payment: '' },
+      )
+      await movementRepository.recordMany(
+        [{ type: 'sale' as const, variantId: replacement.variantId, quantity: replacement.quantity }],
+        actor,
+        { payment: replacement.payment },
+      )
+      const back = returnItems.reduce((s, i) => s + i.quantity, 0)
+      setNotice(`Cambio registrado · devuelto ${back} · entregado ${replacement.quantity}`)
+      setDialog('none')
+      if (!isMobile) inputRef.current?.focus()
+    } catch (e) {
+      setDialogError(errorMessage(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /**
    * Salida o retorno de bodega. Mueve el carrito escaneado entre una bodega y el
    * local de un usuario, sin cambiar el total del sistema (es un traslado).
    */
@@ -538,10 +585,13 @@ export function ScanScreen() {
       {dialog === 'devolucion' ? (
         <DevolucionModal
           fallback={returnFallback}
+          catalog={catalog}
+          localStockOf={(variantId) => (localKey ? stockAtLoc(variantId, localKey) : 0)}
           busy={busy}
           error={dialogError}
           onClose={() => setDialog('none')}
           onConfirm={(sale, items, reason) => void registerReturn(sale, items, reason)}
+          onExchange={(sale, items, reason, replacement) => void registerExchange(sale, items, reason, replacement)}
         />
       ) : null}
 

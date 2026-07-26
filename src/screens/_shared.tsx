@@ -176,14 +176,14 @@ export function InventoryTabs({ active }: { active: 'list' | 'add' | 'new' }) {
 
   return (
     <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-      <button onClick={() => navigate('/inventory')} style={tab(active === 'list')} className="iw-press">
-        Productos
+      <button onClick={() => navigate('/inventory/new')} style={tab(active === 'new')} className="iw-press">
+        Crear referencia
       </button>
       <button onClick={() => navigate('/inventory/add')} style={tab(active === 'add')} className="iw-press">
         Agregar producto
       </button>
-      <button onClick={() => navigate('/inventory/new')} style={tab(active === 'new')} className="iw-press">
-        Crear referencia
+      <button onClick={() => navigate('/inventory')} style={tab(active === 'list')} className="iw-press">
+        Productos
       </button>
     </div>
   )
