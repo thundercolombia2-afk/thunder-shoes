@@ -28,7 +28,7 @@ import {
 import type { Sale } from '@/domain/sales'
 import type { Bodega } from '@/domain/models'
 import { errorMessage, variantStatus } from '@/domain/rules'
-import { bodegaKey, stockAt, storeKey } from '@/domain/locations'
+import { bodegaKey, parseLocationKey, stockAt, storeKey } from '@/domain/locations'
 import { formatMoney } from '@/lib/format'
 import { Icon } from '@/ui/Icon'
 import { CobroModal, DevolucionModal } from './SellModals'
@@ -106,6 +106,18 @@ export function ScanScreen() {
   const capOf = (v: VariantWithProduct['variant']): number =>
     canOperateBodega ? v.stock : saleStockOf(v)
 
+  // Dónde hay stock de una talla, legible: "Bodega 1 · Local 163".
+  const locationLabelOf = (v: VariantWithProduct['variant']): string => {
+    const parts: string[] = []
+    for (const [key, qty] of Object.entries(v.stockByLocation)) {
+      if (!qty) continue
+      const ref = parseLocationKey(key)
+      if (!ref) continue
+      parts.push(ref.kind === 'bodega' ? (bodegas.find((b) => b.id === ref.id)?.code ?? 'Bodega') : `Local ${ref.id}`)
+    }
+    return parts.join(' · ')
+  }
+
   const addToCart = (found: VariantWithProduct) => {
     if (found.variant.stock <= 0) {
       setError(`${found.product.name} talla ${found.variant.size} está agotado.`)
@@ -113,7 +125,7 @@ export function ScanScreen() {
     }
     setError('')
     setNotice('')
-    cart.add(found, capOf(found.variant), saleStockOf(found.variant))
+    cart.add(found, capOf(found.variant), saleStockOf(found.variant), locationLabelOf(found.variant))
     setQuery('')
     if (!isMobile) inputRef.current?.focus()
   }
@@ -533,6 +545,7 @@ export function ScanScreen() {
           hasItems={cart.lines.length > 0}
           saleBlocked={saleExceeds}
           bodegaBlocked={!hasBodegaAccess}
+          showBodega={user?.role === 'bodeguero' || user?.owner === true}
           sticky={!isMobile}
           onCobrar={() => openDialog('cobro')}
           onDevolucion={() => openDialog('devolucion')}
@@ -711,6 +724,9 @@ function CartCard({ line }: { line: CartLine }) {
           <div style={{ font: '500 11.5px var(--font-mono)', color: 'var(--text-muted)', marginTop: 3 }}>
             {line.barcode} · stock {line.stock}
           </div>
+          {line.location ? (
+            <div style={{ fontSize: 11.5, color: 'var(--iw-plum)', fontWeight: 700, marginTop: 2 }}>📍 {line.location}</div>
+          ) : null}
         </div>
         <button
           onClick={() => cart.remove(line.variantId)}
@@ -851,6 +867,9 @@ function CartRow({ line }: { line: CartLine }) {
           {line.name} · T{line.size}
         </div>
         <div style={{ font: '500 11.5px var(--font-mono)', color: 'var(--text-muted)', marginTop: 2 }}>{line.barcode}</div>
+        {line.location ? (
+          <div style={{ fontSize: 11.5, color: 'var(--iw-plum)', fontWeight: 700, marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>📍 {line.location}</div>
+        ) : null}
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
@@ -904,6 +923,7 @@ function SummaryPanel({
   hasItems,
   saleBlocked,
   bodegaBlocked,
+  showBodega,
   sticky,
   onCobrar,
   onDevolucion,
@@ -916,6 +936,7 @@ function SummaryPanel({
   hasItems: boolean
   saleBlocked: boolean
   bodegaBlocked: boolean
+  showBodega: boolean
   sticky: boolean
   onCobrar: () => void
   onDevolucion: () => void
@@ -991,29 +1012,31 @@ function SummaryPanel({
         Devolución
       </button>
 
-      <button
-        onClick={onBodega}
-        disabled={!canBodega}
-        title={bodegaBlocked ? 'No tienes bodegas autorizadas' : hasItems ? undefined : 'Escanea uno o más productos'}
-        className="iw-press"
-        style={{
-          width: '100%',
-          marginTop: 10,
-          height: 54,
-          background: canBodega ? 'var(--iw-plum)' : 'var(--surface-muted)',
-          color: canBodega ? '#fafafa' : 'var(--text-muted)',
-          border: 'none',
-          borderRadius: 'var(--radius-lg)',
-          font: '700 17px var(--font-display)',
-          cursor: canBodega ? 'pointer' : 'not-allowed',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          gap: 10,
-        }}
-      >
-        <Icon name="box" size={20} /> Bodega
-      </button>
+      {showBodega ? (
+        <button
+          onClick={onBodega}
+          disabled={!canBodega}
+          title={bodegaBlocked ? 'No tienes bodegas autorizadas' : hasItems ? undefined : 'Escanea uno o más productos'}
+          className="iw-press"
+          style={{
+            width: '100%',
+            marginTop: 10,
+            height: 54,
+            background: canBodega ? 'var(--iw-plum)' : 'var(--surface-muted)',
+            color: canBodega ? '#fafafa' : 'var(--text-muted)',
+            border: 'none',
+            borderRadius: 'var(--radius-lg)',
+            font: '700 17px var(--font-display)',
+            cursor: canBodega ? 'pointer' : 'not-allowed',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 10,
+          }}
+        >
+          <Icon name="box" size={20} /> Bodega
+        </button>
+      ) : null}
 
       <button
         onClick={onCancel}

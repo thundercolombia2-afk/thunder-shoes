@@ -18,7 +18,8 @@ import { Icon } from '@/ui/Icon'
 
 const TYPE_FILTERS: { label: string; value: MovementType | 'all' }[] = [
   { label: 'Todos', value: 'all' },
-  ...MOVEMENT_TYPES.map((t) => ({ label: MOVEMENT_LABEL[t], value: t })),
+  // La "entrada" (compra) es ingresar mercancía al inventario: nombre más claro.
+  ...MOVEMENT_TYPES.map((t) => ({ label: t === 'purchase' ? 'Ingresar al inventario' : MOVEMENT_LABEL[t], value: t })),
 ]
 
 const TONE: Record<MovementType, string> = {

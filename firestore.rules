@@ -149,7 +149,10 @@ service cloud.firestore {
       allow write: if hasProfile();
     }
     match /products/{productId} {
-      allow read, write: if hasProfile();
+      allow read: if hasProfile();
+      allow create: if hasProfile();
+      // Editar o eliminar una referencia: solo socios (incluye la dueña).
+      allow update, delete: if isSocio();
       match /variants/{size} {
         allow read, write: if hasProfile();
       }

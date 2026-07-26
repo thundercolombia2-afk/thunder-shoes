@@ -28,6 +28,8 @@ export interface CartLine {
    * aunque el tope del carrito sea mayor (caso de quien opera bodega).
    */
   saleStock: number
+  /** Dónde hay stock de esta talla, legible: "Bodega 1 · Local 163". */
+  location: string
   quantity: number
 }
 
@@ -35,7 +37,7 @@ interface CartValue {
   lines: CartLine[]
   /** Último código escaneado con éxito, para la tira "CÓDIGO ESCANEADO". */
   lastScanned: CartLine | null
-  add: (found: VariantWithProduct, cap?: number, saleStock?: number) => void
+  add: (found: VariantWithProduct, cap?: number, saleStock?: number, location?: string) => void
   setQuantity: (variantId: VariantId, delta: number) => void
   /** Fija la cantidad EXACTA (para venta mayorista: escribir 100 sin pulsar 100 veces). */
   setQuantityTo: (variantId: VariantId, value: number) => void
@@ -52,7 +54,7 @@ export function CartProvider({ children }: { children: ReactNode }) {
   const [lines, setLines] = useState<CartLine[]>([])
   const [lastScanned, setLastScanned] = useState<CartLine | null>(null)
 
-  const add = useCallback(({ product, variant }: VariantWithProduct, cap?: number, saleStock?: number) => {
+  const add = useCallback(({ product, variant }: VariantWithProduct, cap?: number, saleStock?: number, location = '') => {
     const capValue = cap ?? variant.stock
     const sale = saleStock ?? variant.stock
     const line: CartLine = {
@@ -63,6 +65,7 @@ export function CartProvider({ children }: { children: ReactNode }) {
       unitPrice: product.price,
       stock: capValue,
       saleStock: sale,
+      location,
       quantity: 1,
     }
     setLastScanned(line)
@@ -70,13 +73,14 @@ export function CartProvider({ children }: { children: ReactNode }) {
       const i = prev.findIndex((l) => l.variantId === variant.id)
       if (i < 0) return [...prev, line]
       const current = prev[i]!
-      // Refresca precio y topes con lo recién leído, sin perder la cantidad.
+      // Refresca precio, topes y ubicación con lo recién leído, sin perder la cantidad.
       const next = [...prev]
       next[i] = {
         ...current,
         unitPrice: product.price,
         stock: capValue,
         saleStock: sale,
+        location,
         quantity: Math.min(current.quantity + 1, Math.max(1, capValue)),
       }
       return next

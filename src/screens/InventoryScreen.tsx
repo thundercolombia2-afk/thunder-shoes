@@ -8,21 +8,22 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useCatalog, useStores } from '@/app/hooks'
 import { useSession } from '@/app/session'
-import { type Bodega, type ProductId, type Size } from '@/domain/models'
+import { money, type Bodega, type ProductId, type Size } from '@/domain/models'
 import { productStatus, variantStatus } from '@/domain/rules'
 import { parseLocationKey, stockAt, storeKey } from '@/domain/locations'
 import { bodegaRepository } from '@/data/repositories/bodegaRepository'
 import { catalogRepository } from '@/data/repositories/catalogRepository'
-import { formatMoney } from '@/lib/format'
+import { formatMoney, formatMoneyInput, parseMoneyInput } from '@/lib/format'
 import { InventoryLayout, cellColor, statusStyles } from './_shared'
 import { Icon } from '@/ui/Icon'
-import type { ProductWithVariants } from '@/data/repositories/catalogRepository'
+import type { EditProductInput, ProductWithVariants } from '@/data/repositories/catalogRepository'
 
 export function InventoryScreen() {
   const { data: catalog, loading, error } = useCatalog()
   const { data: stores } = useStores()
-  const { can, store } = useSession()
+  const { can, store, user } = useSession()
   const seeCosts = can('seeCosts')
+  const canManage = user?.role === 'socio' // editar/eliminar referencias: solo socios
   const navigate = useNavigate()
   const [search, setSearch] = useState('')
   const [bodegas, setBodegas] = useState<Bodega[]>([])
@@ -175,8 +176,11 @@ export function InventoryScreen() {
             <ProductModal
               row={openRow}
               admin={seeCosts}
+              canManage={canManage}
               locName={locName}
               onRemoveSize={removeSize}
+              onUpdate={(id, fields) => catalogRepository.updateProduct(id, fields)}
+              onDelete={(id) => catalogRepository.deleteProduct(id)}
               onClose={() => setOpenId(null)}
             />
           )
@@ -221,19 +225,70 @@ function ListRow({ row, scopeStock, onOpen }: { row: ProductWithVariants; scopeS
 function ProductModal({
   row,
   admin,
+  canManage,
   locName,
   onRemoveSize,
+  onUpdate,
+  onDelete,
   onClose,
 }: {
   row: ProductWithVariants
   admin: boolean
+  /** Puede editar/eliminar la referencia (solo socios). */
+  canManage: boolean
   locName: (key: string) => string
   onRemoveSize: (productId: ProductId, size: Size) => Promise<void>
+  onUpdate: (productId: ProductId, fields: EditProductInput) => Promise<void>
+  onDelete: (productId: ProductId) => Promise<void>
   onClose: () => void
 }) {
   const { product, variants, totalStock } = row
   const [editing, setEditing] = useState(false)
+  const [editForm, setEditForm] = useState(false)
   const [notice, setNotice] = useState('')
+
+  // Campos del formulario de edición de la referencia.
+  const [fName, setFName] = useState(product.name)
+  const [fBrand, setFBrand] = useState(product.brand)
+  const [fPrice, setFPrice] = useState(String(product.price))
+  const [fCost, setFCost] = useState(String(product.cost))
+  const [fMin, setFMin] = useState(String(product.minStock))
+  const [saving, setSaving] = useState(false)
+
+  const saveEdits = async () => {
+    setNotice('')
+    if (!fName.trim()) return setNotice('El nombre no puede quedar vacío.')
+    if (parseMoneyInput(fPrice) <= 0) return setNotice('El precio debe ser mayor a cero.')
+    setSaving(true)
+    try {
+      await onUpdate(product.id, {
+        name: fName.trim(),
+        brand: fBrand.trim(),
+        price: money(parseMoneyInput(fPrice)),
+        cost: money(parseMoneyInput(fCost)),
+        minStock: Math.max(0, Math.floor(Number(fMin) || 0)),
+      })
+      setEditForm(false)
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : 'No se pudo guardar.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const deleteProduct = async () => {
+    if (!window.confirm(`¿Eliminar la referencia "${product.name}"? Esta acción no se puede deshacer.`)) return
+    setNotice('')
+    setSaving(true)
+    try {
+      await onDelete(product.id)
+      onClose()
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : 'No se pudo eliminar.')
+    } finally {
+      setSaving(false)
+    }
+  }
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -284,6 +339,33 @@ function ProductModal({
               {admin ? <span style={{ color: 'var(--iw-orange)' }}> · costo {formatMoney(product.cost)}</span> : null}
             </div>
           </div>
+          {canManage ? (
+            <>
+              <button
+                onClick={() => {
+                  setNotice('')
+                  setFName(product.name); setFBrand(product.brand); setFPrice(String(product.price)); setFCost(String(product.cost)); setFMin(String(product.minStock))
+                  setEditForm(true)
+                }}
+                title="Editar referencia"
+                aria-label="Editar referencia"
+                className="iw-press"
+                style={{ width: 32, height: 32, borderRadius: 8, border: '1px solid var(--border-subtle)', background: 'var(--surface-card)', color: 'var(--text-secondary)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+              >
+                <Icon name="edit" size={15} />
+              </button>
+              <button
+                onClick={() => void deleteProduct()}
+                disabled={saving}
+                title="Eliminar referencia"
+                aria-label="Eliminar referencia"
+                className="iw-press"
+                style={{ width: 32, height: 32, borderRadius: 8, border: '1px solid rgba(224,52,29,.3)', background: 'var(--surface-card)', color: 'var(--color-danger)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+              >
+                <Icon name="trash" size={15} />
+              </button>
+            </>
+          ) : null}
           <button onClick={onClose} aria-label="Cerrar" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 22, lineHeight: 1 }}>
             ✕
           </button>
@@ -376,7 +458,52 @@ function ProductModal({
           <span>Actualizada: <b style={{ color: 'var(--text-secondary)' }}>{fmtDate(product.updatedAt)}</b></span>
         </div>
       </div>
+
+      {editForm ? (
+        <div
+          onClick={(e) => { e.stopPropagation(); setEditForm(false) }}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(12,12,13,.55)', backdropFilter: 'blur(2px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 70, padding: 20, overflowY: 'auto' }}
+        >
+          <div onClick={(e) => e.stopPropagation()} style={{ width: 420, maxWidth: '100%', background: 'var(--surface-card)', borderRadius: 'var(--radius-2xl)', boxShadow: 'var(--shadow-lg)', padding: '22px 24px 24px', boxSizing: 'border-box' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+              <h2 style={{ margin: 0, font: '700 20px var(--font-display)' }}>Editar referencia</h2>
+              <button onClick={() => setEditForm(false)} aria-label="Cerrar" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 22, lineHeight: 1 }}>✕</button>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <EditField label="Nombre" value={fName} onChange={setFName} />
+              <EditField label="Marca" value={fBrand} onChange={setFBrand} />
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <EditField label="Precio" value={formatMoneyInput(fPrice)} onChange={(v) => setFPrice(v.replace(/\D/g, ''))} money />
+                <EditField label="Costo" value={formatMoneyInput(fCost)} onChange={(v) => setFCost(v.replace(/\D/g, ''))} money />
+              </div>
+              <div style={{ width: 140 }}>
+                <EditField label="Stock mínimo" value={fMin} onChange={(v) => setFMin(v.replace(/\D/g, ''))} />
+              </div>
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>El código (SKU {product.sku}) no se puede cambiar: es la base de las etiquetas ya impresas.</span>
+              {notice ? <span style={{ fontSize: 12.5, color: 'var(--color-danger)', fontWeight: 700 }}>{notice}</span> : null}
+            </div>
+            <div style={{ display: 'flex', gap: 10, marginTop: 18, justifyContent: 'flex-end' }}>
+              <button onClick={() => setEditForm(false)} className="iw-press" style={{ height: 44, padding: '0 18px', background: 'var(--surface-card)', color: 'var(--text-primary)', border: '1.5px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', font: '700 14px var(--font-body)', cursor: 'pointer' }}>Cancelar</button>
+              <button onClick={() => void saveEdits()} disabled={saving} className="iw-press" style={{ height: 44, padding: '0 22px', border: 'none', borderRadius: 'var(--radius-md)', font: '700 14px var(--font-body)', background: 'var(--iw-plum)', color: '#fff', cursor: saving ? 'not-allowed' : 'pointer', opacity: saving ? 0.6 : 1 }}>{saving ? 'Guardando…' : 'Guardar cambios'}</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
+  )
+}
+
+function EditField({ label, value, onChange, money: isMoney }: { label: string; value: string; onChange: (v: string) => void; money?: boolean }) {
+  return (
+    <label style={{ display: 'block' }}>
+      <span style={{ display: 'block', font: '700 12.5px var(--font-body)', color: 'var(--text-secondary)', marginBottom: 5 }}>{label}</span>
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        inputMode={isMoney ? 'numeric' : undefined}
+        style={{ width: '100%', height: 44, padding: '0 13px', border: '1.5px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', font: '500 15px var(--font-body)', outline: 'none', background: 'var(--surface-card)', color: 'var(--text-primary)', boxSizing: 'border-box' }}
+      />
+    </label>
   )
 }
 

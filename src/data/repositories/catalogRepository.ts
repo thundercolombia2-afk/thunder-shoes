@@ -11,7 +11,9 @@ import {
   orderBy,
   query,
   runTransaction,
+  updateDoc,
   where,
+  writeBatch,
   Timestamp,
   type Unsubscribe,
 } from 'firebase/firestore'
@@ -61,6 +63,15 @@ export interface NewProductInput {
   cost: Money
   minStock: number
   sizes: Size[]
+}
+
+/** Campos editables de una referencia (el SKU no se toca). */
+export interface EditProductInput {
+  brand: string
+  name: string
+  price: Money
+  cost: Money
+  minStock: number
 }
 
 export const catalogRepository = {
@@ -318,5 +329,42 @@ export const catalogRepository = {
       const barcode = String(data.barcode ?? '')
       if (barcode) tx.delete(barcodeRef(barcode))
     })
+  },
+
+  /**
+   * Edita los datos de una referencia (nombre, marca, precio, costo, mínimo).
+   * El SKU no se edita: es la base de los códigos de barras ya impresos.
+   */
+  async updateProduct(id: ProductId, fields: EditProductInput): Promise<void> {
+    if (DEMO) return demoBackend.updateProduct(id, fields)
+    await updateDoc(productRef(id), {
+      name: fields.name,
+      brand: fields.brand,
+      price: fields.price,
+      cost: fields.cost,
+      minStock: fields.minStock,
+      updatedAt: Timestamp.now(),
+    })
+  },
+
+  /**
+   * Elimina una referencia completa (producto + todas sus tallas + sus códigos).
+   * Solo si TODAS las tallas están en cero: borrar con stock descuadraría el
+   * inventario. Se leen las tallas y se borra todo en un lote.
+   */
+  async deleteProduct(id: ProductId): Promise<void> {
+    if (DEMO) return demoBackend.deleteProduct(id)
+    const variantsSnap = await getDocs(variantsRef(id))
+    const variants = variantsSnap.docs.map(variantFromDoc)
+    if (variants.some((v) => v.stock !== 0)) {
+      throw new DomainError('HAS_STOCK', 'No se puede eliminar una referencia con stock. Primero sácala del inventario.')
+    }
+    const batch = writeBatch(db)
+    for (const v of variants) {
+      batch.delete(variantRef(id, v.size))
+      if (v.barcode) batch.delete(barcodeRef(v.barcode))
+    }
+    batch.delete(productRef(id))
+    await batch.commit()
   },
 }

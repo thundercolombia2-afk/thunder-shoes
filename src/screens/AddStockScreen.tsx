@@ -164,7 +164,7 @@ export function AddStockScreen() {
   return (
     <InventoryLayout active="add">
       <div>
-        <h2 style={{ margin: '4px 0 6px', font: '700 22px var(--font-display)' }}>Agregar producto al inventario</h2>
+        <h2 style={{ margin: '4px 0 6px', font: '700 22px var(--font-display)' }}>ENTRADA: ingresar productos al inventario</h2>
         <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: 14.5 }}>
           Busca la referencia, agrega las tallas y cantidades que entraron, y a qué bodega.
         </p>

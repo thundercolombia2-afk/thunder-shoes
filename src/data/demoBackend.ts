@@ -40,7 +40,7 @@ import {
 import type { Invite, Role, UserProfile } from '@/domain/users'
 import { bodegaKey, storeKey } from '@/domain/locations'
 import { recentDayKeys, toDayKey } from '@/lib/format'
-import type { NewProductInput, ProductWithVariants } from './repositories/catalogRepository'
+import type { EditProductInput, NewProductInput, ProductWithVariants } from './repositories/catalogRepository'
 import { groupSales, matchesCustomer, type Sale } from '@/domain/sales'
 import type { MovementActor } from './repositories/movementRepository'
 
@@ -383,6 +383,33 @@ export const demoBackend = {
       throw new DomainError('HAS_STOCK', 'No se puede quitar una talla con stock. Primero sácala del inventario.')
     }
     variants.splice(i, 1)
+    notify()
+    return Promise.resolve()
+  },
+
+  updateProduct(id: ProductId, fields: EditProductInput): Promise<void> {
+    const p = products.find((x) => x.id === id)
+    if (p) {
+      p.name = fields.name
+      p.brand = fields.brand
+      p.price = fields.price
+      p.cost = fields.cost
+      p.minStock = fields.minStock
+      p.updatedAt = new Date()
+      notify()
+    }
+    return Promise.resolve()
+  },
+  deleteProduct(id: ProductId): Promise<void> {
+    const owned = variants.filter((v) => v.productId === id)
+    if (owned.some((v) => v.stock !== 0)) {
+      throw new DomainError('HAS_STOCK', 'No se puede eliminar una referencia con stock. Primero sácala del inventario.')
+    }
+    for (let i = variants.length - 1; i >= 0; i--) {
+      if (variants[i]!.productId === id) variants.splice(i, 1)
+    }
+    const pi = products.findIndex((x) => x.id === id)
+    if (pi >= 0) products.splice(pi, 1)
     notify()
     return Promise.resolve()
   },
