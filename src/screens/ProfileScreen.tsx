@@ -4,17 +4,23 @@
  * porque cambiarlo requiere verificación aparte).
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Navigate } from 'react-router-dom'
 import { useSession } from '@/app/session'
+import { useStores } from '@/app/hooks'
 import { authService } from '@/data/authService'
+import { bodegaRepository } from '@/data/repositories/bodegaRepository'
 import { ROLE_LABEL } from '@/domain/users'
+import type { Bodega } from '@/domain/models'
 import { RoleBadge } from './_shared'
 import { Field } from '@/ui/Field'
 import { Button } from '@/ui/Button'
 
 export function ProfileScreen() {
   const { user, refreshProfile } = useSession()
+  const { data: stores } = useStores()
+  const [bodegas, setBodegas] = useState<Bodega[]>([])
+  useEffect(() => bodegaRepository.subscribe(setBodegas), [])
 
   const [name, setName] = useState(user?.name ?? '')
   const [savingName, setSavingName] = useState(false)
@@ -74,6 +80,13 @@ export function ProfileScreen() {
     }
   }
 
+  // Local y bodega(s) a los que está asociado, para que la persona sepa dónde
+  // está operando (solo lectura; la asignación la cambia la dueña en Roles).
+  const storeCode = user.storeId ? stores.find((s) => s.id === user.storeId)?.code : undefined
+  const myBodegaCodes = (user.bodegaIds ?? [])
+    .map((id) => bodegas.find((b) => b.id === id)?.code)
+    .filter((c): c is string => Boolean(c))
+
   return (
     <div style={{ padding: '18px 20px 32px', display: 'flex', flexDirection: 'column', gap: 18, maxWidth: 620, margin: '0 auto', width: '100%' }} className="iw-fade">
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
@@ -86,6 +99,13 @@ export function ProfileScreen() {
         <Field label="Nombre" value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" />
         <ReadOnly label="Correo" value={user.email} />
         <ReadOnly label="Rol" value={ROLE_LABEL[user.role]} />
+        {storeCode ? <ReadOnly label="Local" value={`Local ${storeCode}`} /> : null}
+        {myBodegaCodes.length > 0 ? (
+          <ReadOnly label={myBodegaCodes.length > 1 ? 'Bodegas' : 'Bodega'} value={myBodegaCodes.join(' · ')} />
+        ) : null}
+        {!storeCode && myBodegaCodes.length === 0 ? (
+          <ReadOnly label="Asignación" value={user.owner ? 'Dueña · sin local fijo' : 'Sin asignación'} />
+        ) : null}
         {nameMsg ? <Msg note={nameMsg} /> : null}
         <Button variant="primary" onClick={saveName} disabled={savingName || name.trim() === user.name || !name.trim()} style={{ alignSelf: 'flex-start' }}>
           {savingName ? 'Guardando…' : 'Guardar nombre'}

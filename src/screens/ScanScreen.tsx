@@ -18,9 +18,9 @@ import { useScanWithOverlay } from '@/app/scanFlow'
 import { CameraScanner, cameraScanSupported } from '@/app/CameraScanner'
 import { catalogRepository } from '@/data/repositories/catalogRepository'
 import { movementRepository } from '@/data/repositories/movementRepository'
+import { bodegaRepository } from '@/data/repositories/bodegaRepository'
 import {
   money,
-  type PaymentMethod,
   type ReturnReason,
   type VariantId,
   type VariantWithProduct,
@@ -51,8 +51,21 @@ export function ScanScreen() {
   const [busy, setBusy] = useState(false)
   const [dialogError, setDialogError] = useState('')
   const [camera, setCamera] = useState(false)
+  const [bodegas, setBodegas] = useState<Bodega[]>([])
+  useEffect(() => bodegaRepository.subscribe(setBodegas), [])
   const inputRef = useRef<HTMLInputElement>(null)
   const canUseCamera = useMemo(cameraScanSupported, [])
+
+  // Bodegas activas que el usuario puede operar: la dueña las opera todas; los
+  // demás, solo las que se les autorizaron en Configuración → Autorizaciones.
+  const activeAuthorizedBodegaIds = useMemo(
+    () =>
+      bodegas
+        .filter((b) => b.active && (user?.owner || (user?.bodegaIds ?? []).includes(b.id)))
+        .map((b) => b.id),
+    [bodegas, user],
+  )
+  const hasBodegaAccess = activeAuthorizedBodegaIds.length > 0
 
   useEffect(() => {
     // En móvil NO se autoenfoca: abriría el teclado y taparía media pantalla.
@@ -86,9 +99,10 @@ export function ScanScreen() {
   const localKey = store ? storeKey(store.id) : null
   const saleStockOf = (v: VariantWithProduct['variant']): number =>
     localKey ? stockAt(v.stockByLocation, localKey) : v.stock
-  // Quien opera bodega necesita mover cantidades mayores que un local (traslados),
-  // así que su tope es el total; el vendedor puro queda topado a su local.
-  const canOperateBodega = can('operateBodega')
+  // Quien opera bodega (por rol o por autorización) necesita mover cantidades
+  // mayores que un local (traslados), así que su tope es el total; el vendedor
+  // puro queda topado a su local.
+  const canOperateBodega = can('operateBodega') || hasBodegaAccess
   const capOf = (v: VariantWithProduct['variant']): number =>
     canOperateBodega ? v.stock : saleStockOf(v)
 
@@ -471,6 +485,7 @@ export function ScanScreen() {
           total={formatMoney(cart.total)}
           hasItems={cart.lines.length > 0}
           saleBlocked={saleExceeds}
+          bodegaBlocked={!hasBodegaAccess}
           sticky={!isMobile}
           onCobrar={() => openDialog('cobro')}
           onDevolucion={() => openDialog('devolucion')}
@@ -510,10 +525,11 @@ export function ScanScreen() {
       {dialog === 'cobro' ? (
         <CobroModal
           total={cart.total}
+          fromStore={store ? `Local ${store.code}` : ''}
           busy={busy}
           error={dialogError}
           onClose={() => setDialog('none')}
-          onConfirm={(payment: PaymentMethod, customer: string, phone: string) =>
+          onConfirm={(payment: string, customer: string, phone: string) =>
             void registerSale(payment, customer, phone)
           }
         />
@@ -532,7 +548,7 @@ export function ScanScreen() {
       {dialog === 'bodega' ? (
         <BodegaModal
           lines={cart.lines}
-          authorizedBodegaIds={user?.bodegaIds ?? []}
+          authorizedBodegaIds={activeAuthorizedBodegaIds}
           stockAtLoc={stockAtLoc}
           busy={busy}
           error={dialogError}
@@ -837,6 +853,7 @@ function SummaryPanel({
   total,
   hasItems,
   saleBlocked,
+  bodegaBlocked,
   sticky,
   onCobrar,
   onDevolucion,
@@ -848,6 +865,7 @@ function SummaryPanel({
   total: string
   hasItems: boolean
   saleBlocked: boolean
+  bodegaBlocked: boolean
   sticky: boolean
   onCobrar: () => void
   onDevolucion: () => void
@@ -855,6 +873,7 @@ function SummaryPanel({
   onBodega: () => void
 }) {
   const canCobrar = hasItems && !saleBlocked
+  const canBodega = hasItems && !bodegaBlocked
   return (
     <div
       style={{
@@ -924,18 +943,19 @@ function SummaryPanel({
 
       <button
         onClick={onBodega}
-        disabled={!hasItems}
+        disabled={!canBodega}
+        title={bodegaBlocked ? 'No tienes bodegas autorizadas' : hasItems ? undefined : 'Escanea uno o más productos'}
         className="iw-press"
         style={{
           width: '100%',
           marginTop: 10,
           height: 54,
-          background: hasItems ? 'var(--iw-plum)' : 'var(--surface-muted)',
-          color: hasItems ? '#fafafa' : 'var(--text-muted)',
+          background: canBodega ? 'var(--iw-plum)' : 'var(--surface-muted)',
+          color: canBodega ? '#fafafa' : 'var(--text-muted)',
           border: 'none',
           borderRadius: 'var(--radius-lg)',
           font: '700 17px var(--font-display)',
-          cursor: hasItems ? 'pointer' : 'not-allowed',
+          cursor: canBodega ? 'pointer' : 'not-allowed',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',

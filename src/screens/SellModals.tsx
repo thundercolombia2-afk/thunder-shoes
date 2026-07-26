@@ -191,18 +191,22 @@ function ErrorNote({ text }: { text: string }) {
 
 export function CobroModal({
   total,
+  fromStore,
   busy,
   error,
   onClose,
   onConfirm,
 }: {
   total: Money
+  /** Local del que se descuenta el stock vendido (para que el cajero lo verifique). */
+  fromStore: string
   busy: boolean
   error: string
   onClose: () => void
-  onConfirm: (payment: PaymentMethod, customerName: string, customerPhone: string) => void
+  onConfirm: (payment: string, customerName: string, customerPhone: string) => void
 }) {
   const [payment, setPayment] = useState<PaymentMethod>('Efectivo')
+  const [otherName, setOtherName] = useState('')
   const [customer, setCustomer] = useState('')
   const [phone, setPhone] = useState('')
   const [received, setReceived] = useState('')
@@ -210,6 +214,10 @@ export function CobroModal({
   const receivedValue = parseMoneyInput(received)
   const change = receivedValue - total
   const cashShort = payment === 'Efectivo' && receivedValue < total
+  // Con "Otro" hay que escribir el nombre del medio; se guarda ese texto como
+  // método de pago (no el literal "Otro") para que el historial lo explique.
+  const otherMissing = payment === 'Otro' && otherName.trim().length === 0
+  const effectivePayment = payment === 'Otro' && otherName.trim() ? otherName.trim() : payment
 
   return (
     <Overlay onClose={onClose} width={430}>
@@ -225,6 +233,28 @@ export function CobroModal({
       </div>
 
       <TotalBanner label="Total a pagar" value={total} />
+
+      {fromStore ? (
+        <div
+          style={{
+            marginTop: 12,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            background: 'var(--surface-muted)',
+            border: '1px solid var(--border-subtle)',
+            borderRadius: 'var(--radius-md)',
+            padding: '10px 13px',
+            fontSize: 13,
+            color: 'var(--text-secondary)',
+            fontWeight: 700,
+          }}
+        >
+          <span aria-hidden>📍</span>
+          Se descuenta del stock de <span style={{ color: 'var(--iw-plum)' }}>{fromStore}</span>. Verifica que sea el
+          local correcto.
+        </div>
+      ) : null}
 
       <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr', gap: 12, marginTop: 15 }}>
         <div style={{ minWidth: 0 }}>
@@ -270,6 +300,19 @@ export function CobroModal({
         </select>
       </div>
 
+      {payment === 'Otro' ? (
+        <div style={{ marginTop: 14 }}>
+          <label style={labelStyle}>¿Qué medio de pago fue?</label>
+          <input
+            value={otherName}
+            onChange={(e) => setOtherName(e.target.value)}
+            placeholder="Ej: Bono, crédito de tienda, dólares…"
+            autoFocus
+            style={inputStyle}
+          />
+        </div>
+      ) : null}
+
       {payment === 'Efectivo' ? (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 14 }}>
           <div>
@@ -310,8 +353,8 @@ export function CobroModal({
         <AccentButton
           grow
           label={busy ? 'Registrando…' : 'Confirmar venta'}
-          disabled={busy || cashShort}
-          onClick={() => onConfirm(payment, customer.trim(), phone.trim())}
+          disabled={busy || cashShort || otherMissing}
+          onClick={() => onConfirm(effectivePayment, customer.trim(), phone.trim())}
         />
       </Actions>
     </Overlay>

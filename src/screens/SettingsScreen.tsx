@@ -14,7 +14,7 @@ import { useStores } from '@/app/hooks'
 import { teamRepository } from '@/data/repositories/teamRepository'
 import { bodegaRepository } from '@/data/repositories/bodegaRepository'
 import { configRepository } from '@/data/repositories/configRepository'
-import { can as roleCan, ROLE_LABEL, ROLES, isStoreRole, type Invite, type Role, type UserProfile } from '@/domain/users'
+import { ROLE_LABEL, ROLES, isStoreRole, type Invite, type Role, type UserProfile } from '@/domain/users'
 import type { Bodega, Store } from '@/domain/models'
 import { formatShortDate } from '@/lib/format'
 import { Button } from '@/ui/Button'
@@ -280,7 +280,9 @@ function AutorizacionesTab({ bodegas, team, onChange }: { bodegas: Bodega[]; tea
   const [name, setName] = useState('')
   const [creating, setCreating] = useState(false)
 
-  const operators = team.filter((u) => roleCan(u.role, 'operateBodega'))
+  // Cualquier miembro del equipo puede recibir acceso a una bodega, incluidos los
+  // empleados. La dueña no aparece: opera todas las bodegas por defecto.
+  const operators = team.filter((u) => !u.owner)
 
   const create = async () => {
     if (!code.trim()) return
@@ -334,7 +336,7 @@ function AutorizacionesTab({ bodegas, team, onChange }: { bodegas: Bodega[]; tea
             </div>
             <div style={{ padding: '6px 8px' }}>
               {operators.length === 0 ? (
-                <div style={{ padding: 14, fontSize: 13, color: 'var(--text-muted)' }}>No hay quién opere bodegas. Genera una clave de bodeguero.</div>
+                <div style={{ padding: 14, fontSize: 13, color: 'var(--text-muted)' }}>Aún no hay a quién dar acceso. Registra empleados, socios o bodegueros con una clave de invitación.</div>
               ) : (
                 <>
                   <div style={{ padding: '8px 12px 4px', fontSize: 12.5, color: 'var(--text-muted)', lineHeight: 1.4 }}>
