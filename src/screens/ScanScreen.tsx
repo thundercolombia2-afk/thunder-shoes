@@ -28,7 +28,7 @@ import {
 import type { Sale } from '@/domain/sales'
 import type { Bodega } from '@/domain/models'
 import { errorMessage, variantStatus } from '@/domain/rules'
-import { bodegaKey, storeKey } from '@/domain/locations'
+import { bodegaKey, stockAt, storeKey } from '@/domain/locations'
 import { formatMoney } from '@/lib/format'
 import { Icon } from '@/ui/Icon'
 import { CobroModal, DevolucionModal } from './SellModals'
@@ -37,7 +37,7 @@ import { BodegaModal } from './BodegaModal'
 type Dialog = 'none' | 'cobro' | 'devolucion' | 'bodega'
 
 export function ScanScreen() {
-  const { store, actor, user } = useSession()
+  const { store, actor, user, can } = useSession()
   const { data: catalog } = useCatalog()
   const cart = useCart()
   const scanWithOverlay = useScanWithOverlay()
@@ -81,6 +81,17 @@ export function ScanScreen() {
   const stockAtLoc = (variantId: string, key: string) =>
     index.find((e) => e.variant.id === variantId)?.variant.stockByLocation[key] ?? 0
 
+  // Stock que se puede VENDER aquí: el del local actual. Sin local (bodeguero),
+  // no hay venta como tal; se usa el total para no falsear el tope.
+  const localKey = store ? storeKey(store.id) : null
+  const saleStockOf = (v: VariantWithProduct['variant']): number =>
+    localKey ? stockAt(v.stockByLocation, localKey) : v.stock
+  // Quien opera bodega necesita mover cantidades mayores que un local (traslados),
+  // así que su tope es el total; el vendedor puro queda topado a su local.
+  const canOperateBodega = can('operateBodega')
+  const capOf = (v: VariantWithProduct['variant']): number =>
+    canOperateBodega ? v.stock : saleStockOf(v)
+
   const addToCart = (found: VariantWithProduct) => {
     if (found.variant.stock <= 0) {
       setError(`${found.product.name} talla ${found.variant.size} está agotado.`)
@@ -88,10 +99,14 @@ export function ScanScreen() {
     }
     setError('')
     setNotice('')
-    cart.add(found)
+    cart.add(found, capOf(found.variant), saleStockOf(found.variant))
     setQuery('')
     if (!isMobile) inputRef.current?.focus()
   }
+
+  // Venta bloqueada si alguna talla supera lo disponible en el local (aplica sobre
+  // todo a quien opera bodega, cuyo tope de carrito es el total del sistema).
+  const saleExceeds = cart.lines.some((l) => l.quantity > l.saleStock)
 
   const resolve = async (raw: string) => {
     const code = raw.trim()
@@ -122,6 +137,14 @@ export function ScanScreen() {
 
   const registerSale = async (payment: string, customerName: string, customerPhone = '') => {
     if (!actor || cart.lines.length === 0) return
+    // Red de seguridad: nunca vender más de lo disponible en el local (el tope del
+    // carrito ya lo impide para el vendedor, pero quien opera bodega tiene tope
+    // total). La transacción revalida igual en el servidor.
+    const over = cart.lines.find((l) => l.quantity > l.saleStock)
+    if (over) {
+      setDialogError(`Solo hay ${over.saleStock} de ${over.name} T${over.size} en tu local. Ajusta la cantidad.`)
+      return
+    }
     setBusy(true)
     setDialogError('')
     try {
@@ -447,6 +470,7 @@ export function ScanScreen() {
           units={cart.units}
           total={formatMoney(cart.total)}
           hasItems={cart.lines.length > 0}
+          saleBlocked={saleExceeds}
           sticky={!isMobile}
           onCobrar={() => openDialog('cobro')}
           onDevolucion={() => openDialog('devolucion')}
@@ -676,26 +700,53 @@ function QtyInput({ line, big }: { line: CartLine; big?: boolean }) {
     if (digits) cart.setQuantityTo(line.variantId, Number(digits))
   }
 
+  // Aviso cuando lo escrito supera lo que se puede vender en el local.
+  const typed = Number(text || '0')
+  const over = typed > line.saleStock
+  const border = over ? 'var(--color-danger)' : 'var(--border-subtle)'
+
   return (
-    <input
-      value={text}
-      onChange={(e) => commit(e.target.value)}
-      onFocus={(e) => e.target.select()}
-      onBlur={() => setText(String(line.quantity))}
-      inputMode="numeric"
-      aria-label="Cantidad"
-      style={{
-        width: big ? 56 : 46,
-        height: big ? 34 : 28,
-        textAlign: 'center',
-        border: '1px solid var(--border-subtle)',
-        borderRadius: 8,
-        background: 'var(--surface-card)',
-        color: 'var(--text-primary)',
-        font: `700 ${big ? 17 : 14.5}px var(--font-display)`,
-        outline: 'none',
-      }}
-    />
+    <div style={{ position: 'relative', display: 'inline-flex' }}>
+      <input
+        value={text}
+        onChange={(e) => commit(e.target.value)}
+        onFocus={(e) => e.target.select()}
+        onBlur={() => setText(String(line.quantity))}
+        inputMode="numeric"
+        aria-label="Cantidad"
+        style={{
+          width: big ? 56 : 46,
+          height: big ? 34 : 28,
+          textAlign: 'center',
+          border: `1px solid ${border}`,
+          borderRadius: 8,
+          background: 'var(--surface-card)',
+          color: over ? 'var(--color-danger)' : 'var(--text-primary)',
+          font: `700 ${big ? 17 : 14.5}px var(--font-display)`,
+          outline: 'none',
+        }}
+      />
+      {over ? (
+        <span
+          style={{
+            position: 'absolute',
+            top: '100%',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            marginTop: 4,
+            whiteSpace: 'nowrap',
+            background: 'var(--color-danger)',
+            color: '#fff',
+            font: '700 10.5px var(--font-body)',
+            padding: '2px 7px',
+            borderRadius: 6,
+            zIndex: 2,
+          }}
+        >
+          Solo hay {line.saleStock} en tu local
+        </span>
+      ) : null}
+    </div>
   )
 }
 
@@ -785,6 +836,7 @@ function SummaryPanel({
   units,
   total,
   hasItems,
+  saleBlocked,
   sticky,
   onCobrar,
   onDevolucion,
@@ -795,12 +847,14 @@ function SummaryPanel({
   units: number
   total: string
   hasItems: boolean
+  saleBlocked: boolean
   sticky: boolean
   onCobrar: () => void
   onDevolucion: () => void
   onCancel: () => void
   onBodega: () => void
 }) {
+  const canCobrar = hasItems && !saleBlocked
   return (
     <div
       style={{
@@ -819,23 +873,29 @@ function SummaryPanel({
         <span style={{ font: '700 29px var(--font-display)', letterSpacing: '-.02em' }}>{total}</span>
       </div>
 
+      {saleBlocked ? (
+        <div style={{ marginBottom: 10, background: 'rgba(224,52,29,.1)', border: '1px solid rgba(224,52,29,.3)', borderRadius: 'var(--radius-md)', padding: '9px 12px', color: 'var(--color-danger)', fontSize: 12.5, fontWeight: 700, lineHeight: 1.4 }}>
+          Hay tallas que superan el stock disponible en tu local. Ajusta las cantidades para poder cobrar.
+        </div>
+      ) : null}
+
       {/* Los cuatro botones se habilitan al escanear. La devolución también:
           arranca del par escaneado (así se buscan sus ventas), no de un buscador
           de clientes. Sin nada escaneado, no hay de qué partir. */}
       <button
         onClick={onCobrar}
-        disabled={!hasItems}
+        disabled={!canCobrar}
         className="iw-press"
         style={{
           width: '100%',
           height: 54,
-          background: hasItems ? 'var(--iw-yellow)' : 'rgba(255,209,0,.35)',
-          color: hasItems ? '#0c0c0d' : 'var(--text-muted)',
+          background: canCobrar ? 'var(--iw-yellow)' : 'rgba(255,209,0,.35)',
+          color: canCobrar ? '#0c0c0d' : 'var(--text-muted)',
           border: 'none',
           borderRadius: 'var(--radius-lg)',
           font: '700 17px var(--font-display)',
-          cursor: hasItems ? 'pointer' : 'not-allowed',
-          boxShadow: hasItems ? 'var(--shadow-accent)' : 'none',
+          cursor: canCobrar ? 'pointer' : 'not-allowed',
+          boxShadow: canCobrar ? 'var(--shadow-accent)' : 'none',
         }}
       >
         Cobrar
