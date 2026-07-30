@@ -7,8 +7,10 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useSession } from '@/app/session'
-import { catalogRepository } from '@/data/repositories/catalogRepository'
+import { useCatalog } from '@/app/hooks'
+import { catalogRepository, type ProductWithVariants } from '@/data/repositories/catalogRepository'
 import { money, SIZES, type Size } from '@/domain/models'
+import { normalize } from '@/domain/sales'
 import { buildBarcode, errorMessage } from '@/domain/rules'
 import { formatMoneyInput, parseMoneyInput } from '@/lib/format'
 import { barcodeBars, barcodeSvgString } from '@/lib/barcode'
@@ -36,9 +38,30 @@ export function NewReferenceScreen() {
   // de ahí los campos que falten se pintan de rojo hasta que se llenen.
   const [attempted, setAttempted] = useState(false)
   const isMobile = useIsMobile()
+  // Catálogo en vivo: sirve para sugerir referencias YA creadas mientras se
+  // escribe el nombre, y así no terminar con la misma referencia dos veces.
+  const { data: catalog } = useCatalog()
+  // Referencia existente elegida de la lista: mientras esté marcada, la pantalla
+  // deja de ser "crear" y pasa a mostrar lo que ya hay (incluidos sus códigos).
+  const [existing, setExisting] = useState<ProductWithVariants | null>(null)
 
   const selectedSizes = useMemo(() => SIZES.filter((s) => sizes.has(s)), [sizes])
   const skuUpper = sku.toUpperCase().replace(/\s+/g, '')
+
+  const term = normalize(name)
+  const suggestions = useMemo(() => {
+    if (existing || term.length === 0) return []
+    return catalog
+      .filter((r) => normalize(r.product.name).includes(term) || normalize(r.product.sku).includes(term))
+      .slice(0, 8)
+  }, [catalog, term, existing])
+
+  // Aviso aunque no se elija de la lista: si el SKU tecleado ya está en uso, la
+  // transacción de guardado fallaría por códigos duplicados. Mejor decirlo antes.
+  const skuTaken = useMemo(
+    () => (existing || !skuUpper ? null : (catalog.find((r) => r.product.sku.toUpperCase() === skuUpper) ?? null)),
+    [catalog, skuUpper, existing],
+  )
 
   // Validez por campo (para el resaltado en rojo).
   const nameInvalid = name.trim().length === 0
@@ -46,18 +69,57 @@ export function NewReferenceScreen() {
   const priceInvalid = parseMoneyInput(price) <= 0
   const sizesInvalid = selectedSizes.length === 0
   const formValid = !nameInvalid && !skuInvalid && !priceInvalid && !sizesInvalid
-  const barcodeRows = useMemo(
-    () => selectedSizes.map((size) => ({ size, code: skuUpper ? buildBarcode(skuUpper, size) : `—-${size}` })),
-    [selectedSizes, skuUpper],
-  )
+  const barcodeRows = useMemo(() => {
+    // De una referencia existente se muestran los códigos REALES guardados (los
+    // que ya están impresos), no los que se reconstruirían del SKU.
+    const saved = new Map(existing?.variants.map((v) => [v.size, v.barcode]) ?? [])
+    return selectedSizes.map((size) => ({
+      size,
+      code: saved.get(size) ?? (skuUpper ? buildBarcode(skuUpper, size) : `—-${size}`),
+    }))
+  }, [selectedSizes, skuUpper, existing])
 
-  const toggleSize = (size: Size) =>
+  /** Carga en el formulario todos los datos de una referencia que ya existe. */
+  const pickExisting = (r: ProductWithVariants) => {
+    setExisting(r)
+    setName(r.product.name)
+    setSku(r.product.sku)
+    setPrice(String(r.product.price))
+    setCost(String(r.product.cost))
+    setMinStock(String(r.product.minStock))
+    setSizes(new Set(r.variants.filter((v) => v.active).map((v) => v.size)))
+    setAttempted(false)
+    setError('')
+  }
+
+  /** Vuelve al formulario en blanco para crear una referencia de verdad. */
+  const clearExisting = () => {
+    setExisting(null)
+    setName('')
+    setSku('')
+    setPrice('')
+    setCost('')
+    setMinStock('3')
+    setSizes(new Set<Size>())
+    setError('')
+  }
+
+  /** Tallas que la referencia existente maneja (las únicas con código impreso). */
+  const availableSizes = existing
+    ? new Set(existing.variants.filter((v) => v.active).map((v) => v.size))
+    : null
+
+  const toggleSize = (size: Size) => {
+    // Sobre una referencia existente solo se eligen tallas que ya tiene: una
+    // talla nueva no tiene código registrado y la etiqueta no escanearía.
+    if (availableSizes && !availableSizes.has(size)) return
     setSizes((prev) => {
       const next = new Set(prev)
       if (next.has(size)) next.delete(size)
       else next.add(size)
       return next
     })
+  }
 
   /**
    * Abre una hoja de etiquetas lista para imprimir en stickers.
@@ -116,7 +178,9 @@ export function NewReferenceScreen() {
           display: flex; flex-direction: column; align-items: center; justify-content: center;
           overflow: hidden;
         }
-        .label svg { width: 42mm; height: 8mm; }
+        /* 46 mm es todo el ancho útil de la etiqueta (50 mm menos el padding).
+           Cuanto más ancho, más gordo el módulo y más fácil de leer. */
+        .label svg { width: 46mm; height: 9mm; }
         .name { font-size: 2.4mm; font-weight: 700; max-width: 46mm; overflow: hidden;
                 white-space: nowrap; text-overflow: ellipsis; }
         .size { font-size: 3.4mm; font-weight: 800; margin: 0.3mm 0; }
@@ -148,6 +212,8 @@ export function NewReferenceScreen() {
   }
 
   const canSave =
+    !existing &&
+    !skuTaken &&
     name.trim().length > 0 &&
     skuUpper.length > 0 &&
     parseMoneyInput(price) > 0 &&
@@ -156,6 +222,14 @@ export function NewReferenceScreen() {
 
   const save = async () => {
     setError('')
+    if (existing) {
+      setError('Esa referencia ya existe. Agrégale stock en vez de crearla de nuevo.')
+      return
+    }
+    if (skuTaken) {
+      setError(`El código ${skuUpper} ya lo usa "${skuTaken.product.name}".`)
+      return
+    }
     if (!canSave) {
       setAttempted(true)
       setError('Completa los campos marcados en rojo.')
@@ -183,12 +257,109 @@ export function NewReferenceScreen() {
     <InventoryLayout active="new">
       <h2 style={{ margin: '4px 0 0', font: `700 ${isMobile ? 21 : 24}px var(--font-display)` }}>Nueva referencia</h2>
 
+      {existing ? (
+        <div
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            alignItems: 'center',
+            gap: 10,
+            background: 'rgba(224,168,29,.12)',
+            border: '1px solid rgba(224,168,29,.4)',
+            borderRadius: 'var(--radius-md)',
+            padding: '11px 15px',
+            fontSize: 13,
+          }}
+        >
+          <b style={{ color: 'var(--text-primary)' }}>
+            Esta referencia ya existe: {existing.product.name} ({existing.product.sku})
+          </b>
+          <span style={{ color: 'var(--text-muted)' }}>
+            No se creará de nuevo. Abajo están sus códigos de barras, listos para reimprimir.
+          </span>
+          <div style={{ display: 'flex', gap: 8, marginLeft: 'auto', flexWrap: 'wrap' }}>
+            <Button variant="outline" onClick={() => navigate('/inventory/add')}>
+              Agregar stock
+            </Button>
+            <Button variant="outline" onClick={clearExisting}>
+              Crear una nueva
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14 }}>
-        <div style={{ flex: '1 1 100%', minWidth: 0 }}>
-          <Field label="Nombre de la referencia" placeholder="Ej. Nike Air Max 90" value={name} onChange={(e) => setName(e.target.value)} error={attempted && nameInvalid ? 'Falta el nombre.' : undefined} />
+        <div style={{ flex: '1 1 100%', minWidth: 0, position: 'relative' }}>
+          <Field
+            label="Nombre de la referencia"
+            placeholder="Ej. Nike Air Max 90"
+            value={name}
+            autoComplete="off"
+            spellCheck={false}
+            onChange={(e) => {
+              setName(e.target.value)
+              // Al reescribir el nombre se suelta la referencia existente: lo que
+              // quedó en pantalla pasa a ser un borrador editable otra vez.
+              if (existing) setExisting(null)
+            }}
+            {...(existing ? {} : { hint: 'Escribe y elige de la lista si ya existe.' })}
+            error={attempted && nameInvalid ? 'Falta el nombre.' : undefined}
+          />
+          {suggestions.length > 0 ? (
+            <div
+              style={{
+                position: 'absolute',
+                left: 0,
+                right: 0,
+                top: 74,
+                zIndex: 40,
+                background: 'var(--surface-card)',
+                border: '1px solid var(--border-subtle)',
+                borderRadius: 'var(--radius-lg)',
+                boxShadow: 'var(--shadow-lg)',
+                overflow: 'hidden',
+                maxHeight: 300,
+                overflowY: 'auto',
+              }}
+            >
+              {suggestions.map((r) => (
+                <button
+                  key={r.product.id}
+                  // `onMouseDown` y no `onClick`: el input está dentro de un
+                  // <label>, y el blur del click llegaba antes de elegir.
+                  onMouseDown={(e) => {
+                    e.preventDefault()
+                    pickExisting(r)
+                  }}
+                  className="iw-row"
+                  style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '12px 16px', background: 'var(--surface-card)', border: 'none', borderBottom: '1px solid var(--border-subtle)', cursor: 'pointer', textAlign: 'left' }}
+                >
+                  <span style={{ minWidth: 0 }}>
+                    <span style={{ display: 'block', font: '700 14px var(--font-display)', color: 'var(--text-primary)' }}>{r.product.name}</span>
+                    <span style={{ font: '600 12px var(--font-mono)', color: 'var(--text-muted)' }}>{r.product.sku}</span>
+                  </span>
+                  <span style={{ fontSize: 12.5, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                    {r.variants.length} {r.variants.length === 1 ? 'talla' : 'tallas'} · {r.totalStock} pares
+                  </span>
+                </button>
+              ))}
+            </div>
+          ) : null}
         </div>
         <div style={{ flex: '1 1 200px', minWidth: 0 }}>
-          <Field label="Código interno (SKU)" placeholder="AM90-BLK" value={sku} onChange={(e) => setSku(e.target.value)} error={attempted && skuInvalid ? 'Falta el código.' : undefined} />
+          <Field
+            label="Código interno (SKU)"
+            placeholder="AM90-BLK"
+            value={sku}
+            onChange={(e) => setSku(e.target.value)}
+            error={
+              skuTaken
+                ? `Ese código ya lo usa "${skuTaken.product.name}".`
+                : attempted && skuInvalid
+                  ? 'Falta el código.'
+                  : undefined
+            }
+          />
         </div>
         <div style={{ flex: '1 1 200px', minWidth: 0 }}>
           <Field label="Stock mínimo" placeholder="3" inputMode="numeric" value={minStock} onChange={(e) => setMinStock(e.target.value.replace(/\D/g, ''))} />
@@ -211,13 +382,17 @@ export function NewReferenceScreen() {
           {SIZES.map((size) => {
             const on = sizes.has(size)
             const markMissing = attempted && sizesInvalid
+            const blocked = !!availableSizes && !availableSizes.has(size)
             return (
               <button
                 key={size}
                 onClick={() => toggleSize(size)}
+                disabled={blocked}
+                title={blocked ? 'Esta referencia no maneja esta talla.' : undefined}
                 className="iw-press"
                 style={{
-                  cursor: 'pointer',
+                  cursor: blocked ? 'not-allowed' : 'pointer',
+                  opacity: blocked ? 0.35 : 1,
                   width: 52,
                   height: 52,
                   borderRadius: 'var(--radius-md)',
@@ -304,9 +479,15 @@ export function NewReferenceScreen() {
             hint="Uno por par que vas a etiquetar."
           />
         </div>
-        <Button variant="primary" size="lg" onClick={save} disabled={!canSave} style={{ minWidth: 180 }}>
-          {saving ? 'Guardando…' : 'Guardar referencia'}
-        </Button>
+        {existing ? (
+          <Button variant="primary" size="lg" onClick={() => navigate('/inventory')} style={{ minWidth: 180 }}>
+            Ver en inventario
+          </Button>
+        ) : (
+          <Button variant="primary" size="lg" onClick={save} disabled={!canSave} style={{ minWidth: 180 }}>
+            {saving ? 'Guardando…' : 'Guardar referencia'}
+          </Button>
+        )}
         <Button variant="outline" size="lg" onClick={() => printLabels('sheet')} style={{ minWidth: 160 }}>
           Imprimir en hoja
         </Button>
@@ -324,11 +505,20 @@ export function NewReferenceScreen() {
 
 /** Vista previa de la etiqueta, con las mismas barras que saldrán impresas. */
 function BarcodePreview({ code }: { code: string }) {
+  // El ancho del `viewBox` sale del código: uno largo produce módulos más
+  // finos en vez de barras cortadas (que serían ilegibles para el lector).
+  const { bars, width } = barcodeBars(code)
   return (
-    <svg viewBox="0 0 260 64" style={{ width: '100%', maxWidth: 240, height: 52 }} role="img" aria-label={`Código ${code}`}>
-      <rect width="260" height="64" fill="#fff" />
-      {barcodeBars(code).map((bar) => (
-        <rect key={bar.x} x={bar.x} y={6} width={bar.width} height={50} fill="#111" />
+    <svg
+      viewBox={`0 0 ${width} 64`}
+      preserveAspectRatio="none"
+      style={{ width: '100%', maxWidth: 240, height: 52 }}
+      role="img"
+      aria-label={`Código ${code}`}
+    >
+      <rect width={width} height="64" fill="#fff" />
+      {bars.map((bar) => (
+        <rect key={bar.x} x={bar.x} y={0} width={bar.width} height={64} fill="#000" />
       ))}
     </svg>
   )

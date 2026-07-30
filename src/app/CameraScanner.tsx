@@ -29,8 +29,16 @@ const getDetectorCtor = (): BarcodeDetectorCtor | null =>
 export const cameraScanSupported = (): boolean =>
   getDetectorCtor() !== null && typeof navigator !== 'undefined' && !!navigator.mediaDevices
 
-/** Formatos de etiqueta de producto que tiene sentido buscar en una zapatería. */
-const FORMATS = ['code_128', 'code_39', 'ean_13', 'ean_8', 'upc_a', 'upc_e', 'qr_code', 'itf']
+/**
+ * Formatos que tiene sentido buscar: los de etiqueta de producto (Code 128 es
+ * el que imprime esta app), los de fábrica (EAN/UPC/ITF) y los 2D que traen
+ * algunas cajas y guías (QR, PDF417, DataMatrix, Aztec).
+ */
+const FORMATS = [
+  'code_128', 'code_39', 'code_93', 'codabar', 'itf',
+  'ean_13', 'ean_8', 'upc_a', 'upc_e',
+  'qr_code', 'pdf417', 'data_matrix', 'aztec',
+]
 
 export function CameraScanner({ onDetected, onClose }: { onDetected: (code: string) => void; onClose: () => void }) {
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -46,7 +54,15 @@ export function CameraScanner({ onDetected, onClose }: { onDetected: (code: stri
     let stream: MediaStream | null = null
     let frame = 0
     let stopped = false
-    const detector = new Ctor({ formats: FORMATS })
+    // Un navegador que no reconozca ALGUNO de los formatos rechaza el
+    // constructor entero; en ese caso se cae a la lista que ese navegador
+    // traiga de fábrica en vez de quedarse sin cámara.
+    let detector: BarcodeDetectorLike
+    try {
+      detector = new Ctor({ formats: FORMATS })
+    } catch {
+      detector = new Ctor()
+    }
 
     const tick = async () => {
       const video = videoRef.current

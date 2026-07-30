@@ -15,6 +15,7 @@ import { useCart, type CartLine } from '@/app/cart'
 import { useCatalog } from '@/app/hooks'
 import { useIsMobile } from '@/app/useMediaQuery'
 import { useScanWithOverlay } from '@/app/scanFlow'
+import { useBarcodeScanner, useScannerFieldSubmit } from '@/app/barcodeScanner'
 import { CameraScanner, cameraScanSupported } from '@/app/CameraScanner'
 import { catalogRepository } from '@/data/repositories/catalogRepository'
 import { movementRepository } from '@/data/repositories/movementRepository'
@@ -158,6 +159,24 @@ export function ScanScreen() {
     if (first) addToCart({ product: first.product, variant: first.variant })
     else void resolve(query)
   }
+
+  /** Una lectura del lector: se resuelve y se limpia el visor para la siguiente. */
+  const onScanned = (code: string) => {
+    setQuery('')
+    void resolve(code)
+  }
+
+  // El lector solo se escucha en la pantalla de venta "en reposo": con la
+  // cámara o un modal abiertos, el escaneo lo maneja quien esté encima.
+  const scannerActive = !camera && dialog === 'none'
+
+  // Lector con el foco FUERA del visor (después de pulsar un botón, o en móvil,
+  // donde no se autoenfoca nada). Sin esto, ese disparo se perdía.
+  useBarcodeScanner({ onScan: onScanned, enabled: scannerActive })
+
+  // Lector SIN sufijo Enter y con el visor enfocado: el código queda escrito y
+  // nunca se enviaba. Al detectar el silencio tras la ráfaga, se resuelve solo.
+  useScannerFieldSubmit({ value: query, onComplete: onScanned, enabled: scannerActive })
 
   // ── Registro de la venta ───────────────────────────────────────────────────
 
