@@ -36,6 +36,7 @@ import {
   buildBarcode,
   calculateMovement,
   locationDeltas,
+  normalizeBarcode,
 } from '@/domain/rules'
 import type { Invite, Role, UserProfile } from '@/domain/users'
 import { bodegaKey, storeKey } from '@/domain/locations'
@@ -272,7 +273,7 @@ const expenseListeners = new Set<(e: Expense[]) => void>()
 const notifyExpenses = () => expenseListeners.forEach((l) => l([...expenses]))
 
 // Configuración demo: contraseña compartida para ingresar mercancía.
-const config = { entryPassword: '1234' }
+const config = { entryPassword: '1234', authPin: '1234' }
 
 // ── Pub/sub del catálogo ─────────────────────────────────────────────────────
 type CatalogListener = (catalog: ProductWithVariants[]) => void
@@ -307,8 +308,8 @@ export const demoBackend = {
   },
 
   findByBarcode(barcode: string): Promise<VariantWithProduct> {
-    const code = barcode.trim().toUpperCase()
-    const variant = variants.find((v) => v.barcode.toUpperCase() === code)
+    const code = normalizeBarcode(barcode)
+    const variant = variants.find((v) => normalizeBarcode(v.barcode) === code)
     const product = variant && products.find((p) => p.id === variant.productId)
     if (!variant || !product) {
       return Promise.reject(new DomainError('BARCODE_NOT_FOUND', 'Código no encontrado', { barcode }))
@@ -467,6 +468,7 @@ export const demoBackend = {
         dayKey: toDayKey(occurredAt),
       }
       if (draft.returnReason) movement.returnReason = draft.returnReason
+      if (draft.bajaReason) movement.bajaReason = draft.bajaReason
       if (eff.fromLocation) movement.fromLocation = eff.fromLocation
       if (eff.toLocation) movement.toLocation = eff.toLocation
       if (drafts.length > 1) movement.saleId = saleId
@@ -664,6 +666,21 @@ export const demoBackend = {
   },
   setEntryPassword(password: string): Promise<void> {
     config.entryPassword = password
+    return Promise.resolve()
+  },
+  wipeAllHistory(): Promise<{ movements: number; stats: number }> {
+    const m = movements.length
+    const s = statsByDay.size
+    movements.length = 0
+    statsByDay.clear()
+    notify()
+    return Promise.resolve({ movements: m, stats: s })
+  },
+  getAuthPin(): Promise<string> {
+    return Promise.resolve(config.authPin)
+  },
+  setAuthPin(pin: string): Promise<void> {
+    config.authPin = pin
     return Promise.resolve()
   },
 

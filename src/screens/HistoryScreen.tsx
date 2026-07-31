@@ -4,11 +4,12 @@
  * lo ya cargado. La utilidad solo se ve en modo admin, como el diseño.
  */
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useMovements } from '@/app/hooks'
 import { useSession } from '@/app/session'
 import { movementRepository } from '@/data/repositories/movementRepository'
-import { MOVEMENT_LABEL, signedQuantity } from '@/domain/rules'
+import { configRepository } from '@/data/repositories/configRepository'
+import { MOVEMENT_LABEL, errorMessage, signedQuantity } from '@/domain/rules'
 import { MOVEMENT_TYPES, type Movement, type MovementType } from '@/domain/models'
 import { formatMoney, formatShortDate, recentDayKeys } from '@/lib/format'
 import { downloadCsv, toCsv } from '@/lib/csv'
@@ -28,14 +29,27 @@ const TONE: Record<MovementType, string> = {
   return: 'var(--color-danger)',
   salida: 'var(--iw-amber)',
   retorno: 'var(--color-success)',
+  baja: 'var(--color-danger)',
 }
 
 export function HistoryScreen() {
   const { user, can } = useSession()
   const seeCosts = can('seeCosts')
-  const [typeFilter, setTypeFilter] = useState<MovementType | 'all'>('all')
+  const canWipe = user?.owner === true // vaciar historial: solo la dueña
+  // El bodeguero ve un historial acotado: solo SUS entregas (salidas) y recibos
+  // (retornos), no las ventas del negocio.
+  const isBodeguero = user?.role === 'bodeguero'
+  const [typeFilter, setTypeFilter] = useState<MovementType | 'all'>(isBodeguero ? 'salida' : 'all')
   const [search, setSearch] = useState('')
   const [exporting, setExporting] = useState(false)
+  const [wiping, setWiping] = useState(false)
+
+  const filters: { label: string; value: MovementType | 'all' }[] = isBodeguero
+    ? [
+        { label: 'Entregado (salidas)', value: 'salida' },
+        { label: 'Recibido (retornos)', value: 'retorno' },
+      ]
+    : TYPE_FILTERS
 
   const { movements, loading, hasMore, loadMore } = useMovements(
     typeFilter === 'all' ? {} : { type: typeFilter },
@@ -46,12 +60,14 @@ export function HistoryScreen() {
     () =>
       movements.filter(
         (m) =>
-          !term ||
-          m.snapshot.productName.toLowerCase().includes(term) ||
-          m.snapshot.barcode.toLowerCase().includes(term) ||
-          m.snapshot.sku.toLowerCase().includes(term),
+          // El bodeguero solo ve lo que ÉL mismo entregó o recibió.
+          (!isBodeguero || m.userId === user?.id) &&
+          (!term ||
+            m.snapshot.productName.toLowerCase().includes(term) ||
+            m.snapshot.barcode.toLowerCase().includes(term) ||
+            m.snapshot.sku.toLowerCase().includes(term)),
       ),
-    [movements, term],
+    [movements, term, isBodeguero, user?.id],
   )
 
   const exportCsv = async () => {
@@ -112,13 +128,36 @@ export function HistoryScreen() {
         >
           <Icon name="download" size={16} strokeWidth={2.2} /> {exporting ? 'Exportando…' : 'Exportar'}
         </button>
+        {canWipe ? (
+          <button
+            onClick={() => setWiping(true)}
+            title="Vaciar todo el historial"
+            className="iw-press"
+            style={{
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              background: 'var(--surface-card)',
+              color: 'var(--color-danger)',
+              border: '1.5px solid rgba(224,52,29,.4)',
+              borderRadius: 'var(--radius-pill)',
+              padding: '9px 16px',
+              font: '700 13px var(--font-display)',
+            }}
+          >
+            <Icon name="trash" size={16} strokeWidth={2.2} /> Vaciar
+          </button>
+        ) : null}
       </div>
+
+      {wiping ? <WipeHistoryDialog onClose={() => setWiping(false)} /> : null}
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <div style={{ flex: 1, minWidth: 180 }}>
           <SearchBox value={search} onChange={setSearch} placeholder="Referencia o código…" />
         </div>
-        {TYPE_FILTERS.map((f) => {
+        {filters.map((f) => {
           const on = typeFilter === f.value
           return (
             <button
@@ -251,7 +290,7 @@ function HistoryRow({ movement: m, admin }: { movement: Movement; admin: boolean
         >
           {m.snapshot.productName}
         </span>
-        {m.customerName || m.payment ? (
+        {m.customerName || m.payment || m.bajaReason || m.returnReason ? (
           <span
             style={{
               display: 'block',
@@ -262,7 +301,7 @@ function HistoryRow({ movement: m, admin }: { movement: Movement; admin: boolean
               textOverflow: 'ellipsis',
             }}
           >
-            {[m.customerName, m.payment].filter(Boolean).join(' · ')}
+            {[m.customerName, m.payment, m.bajaReason, m.returnReason].filter(Boolean).join(' · ')}
           </span>
         ) : null}
       </span>
@@ -287,4 +326,110 @@ const gridCols = (admin: boolean) =>
 
 function Empty({ text }: { text: string }) {
   return <div style={{ padding: 28, textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 }}>{text}</div>
+}
+
+/**
+ * Confirmación fuerte para VACIAR todo el historial y reiniciar el dashboard.
+ * Pide escribir "VACIAR" y el PIN de autorización (si está configurado). Es
+ * irreversible; no toca el stock del inventario. Solo la dueña ve el botón.
+ */
+function WipeHistoryDialog({ onClose }: { onClose: () => void }) {
+  const [pin, setPin] = useState('')
+  const [needPin, setNeedPin] = useState(false)
+  const [confirmText, setConfirmText] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [done, setDone] = useState('')
+
+  useEffect(() => {
+    configRepository.hasAuthPin().then(setNeedPin).catch(() => setNeedPin(false))
+  }, [])
+
+  const submit = async () => {
+    setError('')
+    if (confirmText.trim().toUpperCase() !== 'VACIAR') {
+      setError('Escribe VACIAR (en mayúsculas) para confirmar.')
+      return
+    }
+    setBusy(true)
+    try {
+      if (needPin && !(await configRepository.verifyAuthPin(pin.trim()))) {
+        setError('PIN incorrecto.')
+        setBusy(false)
+        return
+      }
+      const res = await movementRepository.wipeAllHistory()
+      setDone(`Listo: se borraron ${res.movements} movimientos y el dashboard quedó en cero. Recargando…`)
+      window.setTimeout(() => window.location.reload(), 1400)
+    } catch (e) {
+      setError(errorMessage(e))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div
+      onClick={onClose}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(12,12,13,.55)', backdropFilter: 'blur(2px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 70, padding: 20, overflowY: 'auto' }}
+    >
+      <div onClick={(e) => e.stopPropagation()} style={{ width: 440, maxWidth: '100%', background: 'var(--surface-card)', borderRadius: 'var(--radius-2xl)', boxShadow: 'var(--shadow-lg)', padding: '22px 24px 24px', boxSizing: 'border-box' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+          <h2 style={{ margin: 0, font: '700 20px var(--font-display)', color: 'var(--color-danger)' }}>Vaciar historial</h2>
+          <button onClick={onClose} aria-label="Cerrar" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 22, lineHeight: 1 }}>✕</button>
+        </div>
+        <div style={{ background: 'rgba(224,52,29,.08)', border: '1px solid rgba(224,52,29,.3)', borderRadius: 'var(--radius-md)', padding: '11px 13px', fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5, marginBottom: 14 }}>
+          Esto borra <b>permanentemente</b> todo el historial de movimientos (ventas, entradas, devoluciones, bajas) y reinicia el dashboard a cero. <b>No se puede deshacer.</b> El <b>stock del inventario no cambia</b>.
+        </div>
+
+        {done ? (
+          <div style={{ background: 'rgba(21,119,79,.1)', border: '1px solid rgba(21,119,79,.3)', borderRadius: 'var(--radius-md)', padding: '11px 13px', color: 'var(--color-success)', fontSize: 13, fontWeight: 700 }}>
+            {done}
+          </div>
+        ) : (
+          <>
+            <label style={{ display: 'block', marginBottom: 14 }}>
+              <span style={{ display: 'block', font: '700 12.5px var(--font-body)', color: 'var(--text-secondary)', marginBottom: 5 }}>Escribe VACIAR para confirmar</span>
+              <input
+                value={confirmText}
+                onChange={(e) => setConfirmText(e.target.value)}
+                autoComplete="off"
+                placeholder="VACIAR"
+                style={{ width: '100%', height: 44, padding: '0 13px', border: '1.5px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', font: '700 15px var(--font-body)', letterSpacing: '.1em', outline: 'none', background: 'var(--surface-card)', color: 'var(--text-primary)', boxSizing: 'border-box' }}
+              />
+            </label>
+            {needPin ? (
+              <label style={{ display: 'block', marginBottom: 14 }}>
+                <span style={{ display: 'block', font: '700 12.5px var(--font-body)', color: 'var(--text-secondary)', marginBottom: 5 }}>PIN de autorización</span>
+                <input
+                  value={pin}
+                  onChange={(e) => setPin(e.target.value)}
+                  type="password"
+                  inputMode="numeric"
+                  autoComplete="off"
+                  placeholder="••••"
+                  style={{ width: '100%', height: 44, padding: '0 13px', border: '1.5px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', font: '700 16px var(--font-mono)', letterSpacing: '.2em', outline: 'none', background: 'var(--surface-card)', color: 'var(--text-primary)', boxSizing: 'border-box' }}
+                />
+              </label>
+            ) : null}
+            {error ? (
+              <div style={{ marginBottom: 12, background: 'rgba(224,52,29,.1)', border: '1px solid rgba(224,52,29,.3)', borderRadius: 'var(--radius-md)', padding: '9px 12px', color: 'var(--color-danger)', fontSize: 12.5, fontWeight: 700 }}>
+                {error}
+              </div>
+            ) : null}
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button onClick={onClose} className="iw-press" style={{ height: 44, padding: '0 18px', background: 'var(--surface-card)', color: 'var(--text-primary)', border: '1.5px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', font: '700 14px var(--font-body)', cursor: 'pointer' }}>Cancelar</button>
+              <button
+                onClick={() => void submit()}
+                disabled={busy}
+                className="iw-press"
+                style={{ height: 44, padding: '0 22px', border: 'none', borderRadius: 'var(--radius-md)', font: '700 14px var(--font-body)', background: 'var(--color-danger)', color: '#fff', cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? 0.6 : 1 }}
+              >
+                {busy ? 'Vaciando…' : 'Vaciar todo'}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  )
 }

@@ -36,4 +36,32 @@ export const configRepository = {
     if (!stored) return true
     return password === stored
   },
+
+  // ── PIN de autorización para acciones destructivas ──────────────────────────
+  // Dar de baja stock y eliminar referencias/tallas. Mismo modelo que el PIN de
+  // entrada: un freno operativo guardado en claro, no una credencial fuerte. La
+  // escritura la restringen las reglas a la dueña; la verificación es en cliente.
+
+  async getAuthPin(): Promise<string> {
+    if (DEMO) return demoBackend.getAuthPin()
+    const snap = await getDoc(systemConfigRef())
+    return snap.exists() ? String(snap.data().authPin ?? '') : ''
+  },
+
+  async setAuthPin(pin: string): Promise<void> {
+    if (DEMO) return demoBackend.setAuthPin(pin)
+    await setDoc(systemConfigRef(), { authPin: pin, updatedAt: Timestamp.now() }, { merge: true })
+  },
+
+  /** ¿Está configurado el PIN? Si no, las acciones destructivas no lo piden. */
+  async hasAuthPin(): Promise<boolean> {
+    return (await this.getAuthPin()).length > 0
+  },
+
+  async verifyAuthPin(pin: string): Promise<boolean> {
+    const stored = await this.getAuthPin()
+    // Sin PIN configurado, no se exige (no bloquea a quien aún no lo definió).
+    if (!stored) return true
+    return pin === stored
+  },
 }

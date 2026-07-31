@@ -196,11 +196,14 @@ service cloud.firestore {
       allow create: if hasProfile()
         && request.resource.data.userId == uid()
         && isValidMovement(request.resource.data);
-      allow update, delete: if false;
+      // El libro mayor no se EDITA nunca. Borrarlo solo lo puede hacer la DUEÑA
+      // (vaciar historial para empezar limpio); ningún empleado ni socio normal.
+      allow update: if false;
+      allow delete: if isOwner();
     }
 
     function isValidMovement(m) {
-      return m.type in ['sale', 'purchase', 'return', 'salida', 'retorno']
+      return m.type in ['sale', 'purchase', 'return', 'salida', 'retorno', 'baja']
         && m.quantity is int && m.quantity >= 1
         && m.productId is string
         && m.variantId is string

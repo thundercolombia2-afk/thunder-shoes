@@ -145,6 +145,7 @@ function ClavesTab({
   return (
     <>
       <EntryPasswordCard />
+      <AuthPinCard />
 
       <div style={{ background: 'var(--surface-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-lg)', padding: 18, boxShadow: 'var(--shadow-sm)', display: 'flex', flexDirection: 'column', gap: 14 }}>
         <div>
@@ -307,6 +308,54 @@ function EntryPasswordCard() {
         </div>
         <Button variant="primary" onClick={save} disabled={saving || !loaded}>
           {saving ? 'Guardando…' : saved ? 'Guardada ✓' : 'Guardar'}
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * PIN de autorización para acciones destructivas del inventario: dar de baja
+ * stock y eliminar referencias/tallas. Vacío = no se exige. No es una credencial
+ * fuerte (se guarda en claro y el cliente la lee), sino un freno contra borrados
+ * accidentales o de un empleado curioso. NO uses tu contraseña personal.
+ */
+function AuthPinCard() {
+  const [value, setValue] = useState('')
+  const [loaded, setLoaded] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+
+  useEffect(() => {
+    configRepository.getAuthPin().then(setValue).catch(() => undefined).finally(() => setLoaded(true))
+  }, [])
+
+  const save = async () => {
+    setSaving(true)
+    setSaved(false)
+    try {
+      await configRepository.setAuthPin(value.trim())
+      setSaved(true)
+      setTimeout(() => setSaved(false), 1800)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div style={{ background: 'var(--surface-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-lg)', padding: 18, boxShadow: 'var(--shadow-sm)', display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div>
+        <div style={{ font: '700 15px var(--font-display)' }}>PIN de autorización para borrar</div>
+        <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--text-muted)' }}>
+          Se pide al dar de baja existencias o eliminar una referencia. Déjalo vacío para no exigirlo. No uses tu contraseña personal.
+        </p>
+      </div>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+        <div style={{ flex: '1 1 200px', minWidth: 0 }}>
+          <Field label="PIN de autorización" placeholder={loaded ? 'Sin PIN (no se exige)' : 'Cargando…'} value={value} onChange={(e) => setValue(e.target.value)} />
+        </div>
+        <Button variant="primary" onClick={save} disabled={saving || !loaded}>
+          {saving ? 'Guardando…' : saved ? 'Guardado ✓' : 'Guardar'}
         </Button>
       </div>
     </div>

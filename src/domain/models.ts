@@ -131,11 +131,25 @@ export interface VariantWithProduct {
  *  · return   — devolución de un cliente: regresa stock al local.
  *  · salida   — traslado bodega → local (se destina a un usuario/su local).
  *  · retorno  — traslado local → bodega.
+ *  · baja     — dar de baja: saca stock del sistema sin venderlo (dañado,
+ *               perdido, robo, ajuste, prueba). Solo la dueña. Queda registrado.
  * `salida` y `retorno` son TRASLADOS: mueven stock entre dos ubicaciones sin
  * cambiar el total del sistema.
  */
-export const MOVEMENT_TYPES = ['sale', 'purchase', 'return', 'salida', 'retorno'] as const
+export const MOVEMENT_TYPES = ['sale', 'purchase', 'return', 'salida', 'retorno', 'baja'] as const
 export type MovementType = (typeof MOVEMENT_TYPES)[number]
+
+/** Motivos de una baja de inventario. */
+export const BAJA_REASONS = [
+  'Dañado',
+  'Perdido',
+  'Robo',
+  'Vencido',
+  'Ajuste de conteo',
+  'Prueba / limpieza',
+  'Otro',
+] as const
+export type BajaReason = (typeof BAJA_REASONS)[number]
 
 /** Traslados: afectan dos ubicaciones (from −, to +). */
 export const TRANSFER_TYPES = ['salida', 'retorno'] as const
@@ -225,6 +239,8 @@ export interface Movement {
   toLocation?: string
 
   returnReason?: ReturnReason
+  /** Motivo, solo en las bajas (dañado, perdido, robo…). */
+  bajaReason?: BajaReason
 
   /**
    * Agrupa las líneas de una misma venta. Un carrito de 3 pares genera 3
@@ -252,6 +268,8 @@ export interface MovementDraft {
   /** Solo en compras: costo unitario, editable por el usuario. */
   unitCostOverride?: Money
   returnReason?: ReturnReason
+  /** Solo en bajas: motivo. */
+  bajaReason?: BajaReason
   /** Ubicación de origen (traslados y ventas). Clave de `domain/locations.ts`. */
   fromLocation?: string
   /** Ubicación de destino (entradas, devoluciones y traslados). */

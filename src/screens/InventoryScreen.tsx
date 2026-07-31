@@ -8,11 +8,22 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useCatalog, useStores } from '@/app/hooks'
 import { useSession } from '@/app/session'
-import { money, type Bodega, type ProductId, type Size } from '@/domain/models'
-import { productStatus, variantStatus } from '@/domain/rules'
+import {
+  money,
+  BAJA_REASONS,
+  type BajaReason,
+  type Bodega,
+  type MovementDraft,
+  type ProductId,
+  type Size,
+  type Variant,
+} from '@/domain/models'
+import { productStatus, variantStatus, errorMessage } from '@/domain/rules'
 import { parseLocationKey, stockAt, storeKey } from '@/domain/locations'
 import { bodegaRepository } from '@/data/repositories/bodegaRepository'
 import { catalogRepository } from '@/data/repositories/catalogRepository'
+import { movementRepository, type MovementActor } from '@/data/repositories/movementRepository'
+import { configRepository } from '@/data/repositories/configRepository'
 import { formatMoney, formatMoneyInput, parseMoneyInput } from '@/lib/format'
 import { InventoryLayout, cellColor, statusStyles } from './_shared'
 import { Icon } from '@/ui/Icon'
@@ -21,9 +32,10 @@ import type { EditProductInput, ProductWithVariants } from '@/data/repositories/
 export function InventoryScreen() {
   const { data: catalog, loading, error } = useCatalog()
   const { data: stores } = useStores()
-  const { can, store, user } = useSession()
+  const { can, store, user, actor } = useSession()
   const seeCosts = can('seeCosts')
   const canManage = user?.role === 'socio' // editar/eliminar referencias: solo socios
+  const canBaja = user?.owner === true // dar de baja: solo la dueña
   const navigate = useNavigate()
   const [search, setSearch] = useState('')
   const [bodegas, setBodegas] = useState<Bodega[]>([])
@@ -177,6 +189,8 @@ export function InventoryScreen() {
               row={openRow}
               admin={seeCosts}
               canManage={canManage}
+              canBaja={canBaja}
+              actor={actor}
               locName={locName}
               onRemoveSize={removeSize}
               onUpdate={(id, fields) => catalogRepository.updateProduct(id, fields)}
@@ -226,6 +240,8 @@ function ProductModal({
   row,
   admin,
   canManage,
+  canBaja,
+  actor,
   locName,
   onRemoveSize,
   onUpdate,
@@ -236,6 +252,9 @@ function ProductModal({
   admin: boolean
   /** Puede editar/eliminar la referencia (solo socios). */
   canManage: boolean
+  /** Puede dar de baja stock (solo la dueña). */
+  canBaja: boolean
+  actor: MovementActor | null
   locName: (key: string) => string
   onRemoveSize: (productId: ProductId, size: Size) => Promise<void>
   onUpdate: (productId: ProductId, fields: EditProductInput) => Promise<void>
@@ -246,6 +265,9 @@ function ProductModal({
   const [editing, setEditing] = useState(false)
   const [editForm, setEditForm] = useState(false)
   const [notice, setNotice] = useState('')
+  // Diálogo de baja/eliminación: 'baja' = dar de baja stock; 'delete' = dar de
+  // baja lo que quede y eliminar la referencia.
+  const [bajaMode, setBajaMode] = useState<'none' | 'baja' | 'delete'>('none')
 
   // Campos del formulario de edición de la referencia.
   const [fName, setFName] = useState(product.name)
@@ -271,20 +293,6 @@ function ProductModal({
       setEditForm(false)
     } catch (e) {
       setNotice(e instanceof Error ? e.message : 'No se pudo guardar.')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const deleteProduct = async () => {
-    if (!window.confirm(`¿Eliminar la referencia "${product.name}"? Esta acción no se puede deshacer.`)) return
-    setNotice('')
-    setSaving(true)
-    try {
-      await onDelete(product.id)
-      onClose()
-    } catch (e) {
-      setNotice(e instanceof Error ? e.message : 'No se pudo eliminar.')
     } finally {
       setSaving(false)
     }
@@ -355,7 +363,7 @@ function ProductModal({
                 <Icon name="edit" size={15} />
               </button>
               <button
-                onClick={() => void deleteProduct()}
+                onClick={() => { setNotice(''); setBajaMode('delete') }}
                 disabled={saving}
                 title="Eliminar referencia"
                 aria-label="Eliminar referencia"
@@ -442,8 +450,17 @@ function ProductModal({
         </div>
         {editing ? (
           <span style={{ display: 'block', marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>
-            Quita con la ✕ las tallas que no manejas. Solo las que están en cero; si una tiene stock, primero sácala del inventario.
+            Quita con la ✕ las tallas que no manejas. Solo las que están en cero; si una tiene stock, primero dala de baja.
           </span>
+        ) : null}
+        {canBaja && totalStock > 0 ? (
+          <button
+            onClick={() => { setNotice(''); setBajaMode('baja') }}
+            className="iw-press"
+            style={{ marginTop: 14, width: '100%', height: 44, background: 'var(--surface-card)', color: 'var(--iw-orange)', border: '1.5px solid rgba(224,120,29,.4)', borderRadius: 'var(--radius-md)', font: '700 14px var(--font-body)', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
+          >
+            <Icon name="box" size={16} /> Dar de baja existencias
+          </button>
         ) : null}
         {notice ? (
           <div style={{ marginTop: 10, background: 'rgba(224,52,29,.1)', border: '1px solid rgba(224,52,29,.3)', borderRadius: 'var(--radius-md)', padding: '9px 12px', color: 'var(--color-danger)', fontSize: 12.5, fontWeight: 700 }}>
@@ -489,8 +506,205 @@ function ProductModal({
           </div>
         </div>
       ) : null}
+
+      {bajaMode !== 'none' ? (
+        <BajaDialog
+          row={row}
+          actor={actor}
+          forDelete={bajaMode === 'delete'}
+          onClose={() => setBajaMode('none')}
+          onDeleted={onClose}
+          onDelete={onDelete}
+        />
+      ) : null}
     </div>
   )
+}
+
+/**
+ * Diálogo para dar de baja stock (dañado, perdido, robo, prueba…) y, opcionalmente,
+ * eliminar la referencia después. Pide un PIN de autorización si está configurado
+ * en Ajustes. Cada baja queda registrada en el historial (movimiento inmutable).
+ */
+function BajaDialog({
+  row,
+  actor,
+  forDelete,
+  onClose,
+  onDeleted,
+  onDelete,
+}: {
+  row: ProductWithVariants
+  actor: MovementActor | null
+  forDelete: boolean
+  onClose: () => void
+  onDeleted: () => void
+  onDelete: (productId: ProductId) => Promise<void>
+}) {
+  const { product, variants, totalStock } = row
+  const withStock = variants.filter((v) => v.stock > 0)
+  // Cantidad a dar de baja por talla. Al eliminar, es TODO (bloqueado en el tope).
+  const [qty, setQty] = useState<Record<number, string>>(() =>
+    Object.fromEntries(withStock.map((v) => [v.size, String(v.stock)])),
+  )
+  const [reason, setReason] = useState<BajaReason>(forDelete ? 'Prueba / limpieza' : 'Dañado')
+  const [pin, setPin] = useState('')
+  const [needPin, setNeedPin] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    configRepository.hasAuthPin().then(setNeedPin).catch(() => setNeedPin(false))
+  }, [])
+
+  const totalToBaja = forDelete
+    ? totalStock
+    : withStock.reduce((s, v) => s + clampQty(qty[v.size], v.stock), 0)
+
+  const submit = async () => {
+    setError('')
+    if (!actor) return setError('Selecciona un local para operar antes de dar de baja.')
+    if (totalStock > 0 && totalToBaja <= 0) return setError('Indica cuántos pares vas a dar de baja.')
+    setBusy(true)
+    try {
+      if (needPin && !(await configRepository.verifyAuthPin(pin.trim()))) {
+        setError('PIN incorrecto.')
+        setBusy(false)
+        return
+      }
+      // Un movimiento de baja por talla y por ubicación donde haya stock.
+      const drafts: MovementDraft[] = []
+      for (const v of withStock) {
+        const want = forDelete ? v.stock : clampQty(qty[v.size], v.stock)
+        if (want > 0) drafts.push(...bajaDraftsForVariant(v, want, reason))
+      }
+      if (drafts.length > 0) await movementRepository.recordMany(drafts, actor)
+      if (forDelete) {
+        await onDelete(product.id)
+        onDeleted()
+      } else {
+        onClose()
+      }
+    } catch (e) {
+      setError(errorMessage(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const title = forDelete ? 'Eliminar referencia' : 'Dar de baja existencias'
+  const cta = forDelete ? (totalStock > 0 ? 'Dar de baja y eliminar' : 'Eliminar') : 'Dar de baja'
+
+  return (
+    <div
+      onClick={(e) => { e.stopPropagation(); onClose() }}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(12,12,13,.55)', backdropFilter: 'blur(2px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 70, padding: 20, overflowY: 'auto' }}
+    >
+      <div onClick={(e) => e.stopPropagation()} style={{ width: 420, maxWidth: '100%', background: 'var(--surface-card)', borderRadius: 'var(--radius-2xl)', boxShadow: 'var(--shadow-lg)', padding: '22px 24px 24px', boxSizing: 'border-box', maxHeight: '90vh', overflowY: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+          <h2 style={{ margin: 0, font: '700 20px var(--font-display)' }}>{title}</h2>
+          <button onClick={onClose} aria-label="Cerrar" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 22, lineHeight: 1 }}>✕</button>
+        </div>
+        <p style={{ margin: '0 0 14px', fontSize: 13, color: 'var(--text-muted)' }}>
+          {product.name} · {product.sku}
+          {forDelete
+            ? totalStock > 0
+              ? ` — se dará de baja todo el stock (${totalStock}) y se eliminará la referencia.`
+              : ' — se eliminará la referencia.'
+            : ' — el stock que des de baja sale del inventario y queda registrado.'}
+        </p>
+
+        {!forDelete && withStock.length > 0 ? (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 14 }}>
+            {withStock.map((v) => (
+              <label key={v.size} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, minWidth: 56 }}>
+                <span style={{ fontSize: 10.5, color: 'var(--text-muted)', fontWeight: 700 }}>T{v.size} · {v.stock}</span>
+                <input
+                  value={qty[v.size] ?? ''}
+                  onChange={(e) => setQty((p) => ({ ...p, [v.size]: e.target.value.replace(/\D/g, '') }))}
+                  inputMode="numeric"
+                  aria-label={`Baja talla ${v.size}`}
+                  style={{ width: 52, height: 36, textAlign: 'center', border: '1.5px solid var(--border-subtle)', borderRadius: 8, background: 'var(--surface-card)', color: 'var(--text-primary)', font: '700 15px var(--font-display)', outline: 'none' }}
+                />
+              </label>
+            ))}
+          </div>
+        ) : null}
+
+        {(!forDelete || totalStock > 0) ? (
+          <label style={{ display: 'block', marginBottom: 14 }}>
+            <span style={{ display: 'block', font: '700 12.5px var(--font-body)', color: 'var(--text-secondary)', marginBottom: 5 }}>Motivo</span>
+            <select
+              value={reason}
+              onChange={(e) => setReason(e.target.value as BajaReason)}
+              style={{ width: '100%', height: 44, padding: '0 12px', border: '1.5px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', font: '500 15px var(--font-body)', background: 'var(--surface-card)', color: 'var(--text-primary)', outline: 'none' }}
+            >
+              {BAJA_REASONS.map((r) => <option key={r} value={r}>{r}</option>)}
+            </select>
+          </label>
+        ) : null}
+
+        {needPin ? (
+          <label style={{ display: 'block', marginBottom: 14 }}>
+            <span style={{ display: 'block', font: '700 12.5px var(--font-body)', color: 'var(--text-secondary)', marginBottom: 5 }}>PIN de autorización</span>
+            <input
+              value={pin}
+              onChange={(e) => setPin(e.target.value)}
+              type="password"
+              inputMode="numeric"
+              autoComplete="off"
+              placeholder="••••"
+              style={{ width: '100%', height: 44, padding: '0 13px', border: '1.5px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', font: '700 16px var(--font-mono)', letterSpacing: '.2em', outline: 'none', background: 'var(--surface-card)', color: 'var(--text-primary)', boxSizing: 'border-box' }}
+            />
+          </label>
+        ) : null}
+
+        {error ? (
+          <div style={{ marginBottom: 12, background: 'rgba(224,52,29,.1)', border: '1px solid rgba(224,52,29,.3)', borderRadius: 'var(--radius-md)', padding: '9px 12px', color: 'var(--color-danger)', fontSize: 12.5, fontWeight: 700 }}>
+            {error}
+          </div>
+        ) : null}
+
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+          <button onClick={onClose} className="iw-press" style={{ height: 44, padding: '0 18px', background: 'var(--surface-card)', color: 'var(--text-primary)', border: '1.5px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', font: '700 14px var(--font-body)', cursor: 'pointer' }}>Cancelar</button>
+          <button
+            onClick={() => void submit()}
+            disabled={busy}
+            className="iw-press"
+            style={{ height: 44, padding: '0 22px', border: 'none', borderRadius: 'var(--radius-md)', font: '700 14px var(--font-body)', background: 'var(--color-danger)', color: '#fff', cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? 0.6 : 1 }}
+          >
+            {busy ? 'Procesando…' : cta}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** Limita la cantidad tecleada al stock disponible de la talla. */
+function clampQty(raw: string | undefined, max: number): number {
+  const n = Math.floor(Number(raw ?? '0')) || 0
+  return Math.max(0, Math.min(n, max))
+}
+
+/**
+ * Divide una baja de `qty` unidades de una talla en un movimiento por cada
+ * ubicación donde haya stock (de mayor a menor), para que el stock por ubicación
+ * cuadre con el total. Sin esto el total bajaría pero las ubicaciones no.
+ */
+function bajaDraftsForVariant(variant: Variant, qty: number, reason: BajaReason): MovementDraft[] {
+  const drafts: MovementDraft[] = []
+  let remaining = Math.min(qty, variant.stock)
+  const locs = Object.entries(variant.stockByLocation)
+    .filter(([, q]) => q > 0)
+    .sort((a, b) => b[1] - a[1])
+  for (const [key, avail] of locs) {
+    if (remaining <= 0) break
+    const take = Math.min(remaining, avail)
+    drafts.push({ type: 'baja', variantId: variant.id, quantity: take, fromLocation: key, bajaReason: reason })
+    remaining -= take
+  }
+  return drafts
 }
 
 function EditField({ label, value, onChange, money: isMoney }: { label: string; value: string; onChange: (v: string) => void; money?: boolean }) {

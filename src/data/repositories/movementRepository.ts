@@ -14,11 +14,13 @@ import {
   startAfter,
   Timestamp,
   where,
+  writeBatch,
+  type CollectionReference,
   type DocumentData,
   type QueryDocumentSnapshot,
 } from 'firebase/firestore'
 import { db } from '../firebase'
-import { dailyStatsRef, movementsRef, productRef, variantRef } from '../paths'
+import { dailyStatsCol, dailyStatsRef, movementsRef, productRef, variantRef } from '../paths'
 import {
   movementFromDoc,
   productFromDoc,
@@ -169,6 +171,7 @@ export const movementRepository = {
           dayKey,
         }
         if (draft.returnReason) movement.returnReason = draft.returnReason
+        if (draft.bajaReason) movement.bajaReason = draft.bajaReason
         if (eff.fromLocation) movement.fromLocation = eff.fromLocation
         if (eff.toLocation) movement.toLocation = eff.toLocation
         // Siempre: sin `saleId` no se puede reconstruir el tiquete ni saber
@@ -362,6 +365,35 @@ export const movementRepository = {
     if (DEMO) return demoBackend.listRecent(max)
     const snap = await getDocs(query(movementsRef(), orderBy('occurredAt', 'desc'), limit(max)))
     return snap.docs.map(movementFromDoc)
+  },
+
+  /**
+   * Vacía TODO el historial: borra el libro mayor de movimientos y reinicia el
+   * dashboard (dailyStats). Acción de la DUEÑA para "empezar limpio". No toca el
+   * stock del inventario (es una proyección aparte). Es IRREVERSIBLE.
+   *
+   * Se borra por lotes de 400 (tope de una escritura por lotes es 500). Para dos
+   * locales el volumen es pequeño; si algún día crece mucho, esto habría que
+   * moverlo a una Cloud Function.
+   */
+  async wipeAllHistory(): Promise<{ movements: number; stats: number }> {
+    if (DEMO) return demoBackend.wipeAllHistory()
+    const deleteAll = async (colRef: CollectionReference) => {
+      let total = 0
+      for (;;) {
+        const snap = await getDocs(query(colRef, limit(400)))
+        if (snap.empty) break
+        const batch = writeBatch(db)
+        snap.docs.forEach((d) => batch.delete(d.ref))
+        await batch.commit()
+        total += snap.size
+        if (snap.size < 400) break
+      }
+      return total
+    }
+    const movements = await deleteAll(movementsRef())
+    const stats = await deleteAll(dailyStatsCol())
+    return { movements, stats }
   },
 }
 

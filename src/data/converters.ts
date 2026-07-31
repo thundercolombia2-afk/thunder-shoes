@@ -166,6 +166,7 @@ export const movementFromDoc = (snap: QueryDocumentSnapshot<DocumentData>): Move
   }
   // `exactOptionalPropertyTypes` no permite asignar `undefined` explícito.
   if (d.returnReason) movement.returnReason = d.returnReason
+  if (d.bajaReason) movement.bajaReason = d.bajaReason
   if (d.fromLocation) movement.fromLocation = String(d.fromLocation)
   if (d.toLocation) movement.toLocation = String(d.toLocation)
   if (d.saleId) movement.saleId = String(d.saleId)

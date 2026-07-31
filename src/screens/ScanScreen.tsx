@@ -28,7 +28,7 @@ import {
 } from '@/domain/models'
 import type { Sale } from '@/domain/sales'
 import type { Bodega } from '@/domain/models'
-import { errorMessage, variantStatus } from '@/domain/rules'
+import { errorMessage, normalizeBarcode, variantStatus } from '@/domain/rules'
 import { bodegaKey, parseLocationKey, stockAt, storeKey } from '@/domain/locations'
 import { formatMoney } from '@/lib/format'
 import { Icon } from '@/ui/Icon'
@@ -138,8 +138,11 @@ export function ScanScreen() {
   const resolve = async (raw: string) => {
     const code = raw.trim()
     if (!code) return
-    // El catálogo ya está en memoria y en vivo: primero se busca ahí.
-    const local = index.find((e) => e.variant.barcode.toUpperCase() === code.toUpperCase())
+    // El catálogo ya está en memoria y en vivo: primero se busca ahí. Se compara
+    // en forma canónica (`normalizeBarcode`) para tolerar un lector que teclee el
+    // guion como apóstrofo (teclado en otra distribución).
+    const target = normalizeBarcode(code)
+    const local = index.find((e) => normalizeBarcode(e.variant.barcode) === target)
     if (local) {
       addToCart({ product: local.product, variant: local.variant })
       return
@@ -564,6 +567,7 @@ export function ScanScreen() {
           hasItems={cart.lines.length > 0}
           saleBlocked={saleExceeds}
           bodegaBlocked={!hasBodegaAccess}
+          showSale={can('sell')}
           showBodega={user?.role === 'bodeguero' || user?.owner === true}
           sticky={!isMobile}
           onCobrar={() => openDialog('cobro')}
@@ -942,6 +946,7 @@ function SummaryPanel({
   hasItems,
   saleBlocked,
   bodegaBlocked,
+  showSale,
   showBodega,
   sticky,
   onCobrar,
@@ -955,6 +960,8 @@ function SummaryPanel({
   hasItems: boolean
   saleBlocked: boolean
   bodegaBlocked: boolean
+  /** Mostrar Cobrar y Devolución (roles de venta). El bodeguero no los ve. */
+  showSale: boolean
   showBodega: boolean
   sticky: boolean
   onCobrar: () => void
@@ -982,6 +989,8 @@ function SummaryPanel({
         <span style={{ font: '700 29px var(--font-display)', letterSpacing: '-.02em' }}>{total}</span>
       </div>
 
+      {showSale ? (
+      <>
       {saleBlocked ? (
         <div style={{ marginBottom: 10, background: 'rgba(224,52,29,.1)', border: '1px solid rgba(224,52,29,.3)', borderRadius: 'var(--radius-md)', padding: '9px 12px', color: 'var(--color-danger)', fontSize: 12.5, fontWeight: 700, lineHeight: 1.4 }}>
           Hay tallas que superan el stock disponible en tu local. Ajusta las cantidades para poder cobrar.
@@ -1030,6 +1039,8 @@ function SummaryPanel({
       >
         Devolución
       </button>
+      </>
+      ) : null}
 
       {showBodega ? (
         <button

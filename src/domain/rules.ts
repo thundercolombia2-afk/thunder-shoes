@@ -28,6 +28,7 @@ export type DomainErrorCode =
   | 'PRODUCT_INACTIVE'
   | 'DUPLICATE_BARCODE'
   | 'MISSING_RETURN_REASON'
+  | 'MISSING_BAJA_REASON'
   | 'HAS_STOCK'
 
 export class DomainError extends Error {
@@ -57,6 +58,10 @@ export const errorMessage = (error: unknown): string => {
         return 'Ya existe una referencia con ese código de barras.'
       case 'MISSING_RETURN_REASON':
         return 'Selecciona la razón de la devolución.'
+      case 'MISSING_BAJA_REASON':
+        return 'Selecciona el motivo de la baja.'
+      case 'HAS_STOCK':
+        return 'No se puede eliminar una referencia con stock. Primero dala de baja.'
     }
   }
   return 'Ocurrió un error. Intenta de nuevo.'
@@ -68,15 +73,17 @@ export const errorMessage = (error: unknown): string => {
 
 /**
  * Signo del movimiento sobre el stock TOTAL del sistema.
- * Venta saca; compra y devolución meten; los traslados (salida/retorno) no
- * cambian el total, solo mueven stock entre ubicaciones.
+ * Venta y baja sacan; compra y devolución meten; los traslados (salida/retorno)
+ * no cambian el total, solo mueven stock entre ubicaciones.
  */
-export const stockDirection = (type: MovementType): 1 | -1 => (type === 'sale' ? -1 : 1)
+export const stockDirection = (type: MovementType): 1 | -1 =>
+  type === 'sale' || type === 'baja' ? -1 : 1
 
 /** Delta sobre el stock TOTAL del sistema (0 en traslados). */
 export const stockDeltaFor = (type: MovementType, quantity: number): number => {
   switch (type) {
     case 'sale':
+    case 'baja':
       return -quantity
     case 'purchase':
     case 'return':
@@ -95,6 +102,8 @@ export function locationDeltas(
   const out: { key: string; delta: number }[] = []
   switch (draft.type) {
     case 'sale':
+    case 'baja':
+      // La baja saca stock de la ubicación donde estaba (bodega o local).
       if (draft.fromLocation) out.push({ key: draft.fromLocation, delta: -q })
       break
     case 'purchase':
@@ -129,6 +138,9 @@ export function assertMovementIsValid(
   }
   if (draft.type === 'return' && !draft.returnReason) {
     throw new DomainError('MISSING_RETURN_REASON', 'Falta la razón de la devolución')
+  }
+  if (draft.type === 'baja' && !draft.bajaReason) {
+    throw new DomainError('MISSING_BAJA_REASON', 'Falta el motivo de la baja')
   }
   // Cada ubicación de la que SALE stock debe tener con qué cubrirlo. Así, vender
   // en un local o sacar de una bodega vacía se rechaza en la ubicación concreta,
@@ -176,10 +188,13 @@ export function calculateMovement(
   const unitMargin = subMoney(unitPrice, unitCost)
   const stockDelta = stockDeltaFor(draft.type, draft.quantity)
 
-  // Las entradas y los traslados se valoran al COSTO (no hay venta); las ventas
-  // y devoluciones, al precio.
+  // Las entradas, los traslados y las bajas se valoran al COSTO (no hay venta);
+  // las ventas y devoluciones, al precio.
   const total =
-    draft.type === 'purchase' || draft.type === 'salida' || draft.type === 'retorno'
+    draft.type === 'purchase' ||
+    draft.type === 'salida' ||
+    draft.type === 'retorno' ||
+    draft.type === 'baja'
       ? mulMoney(unitCost, draft.quantity)
       : mulMoney(unitPrice, draft.quantity)
 
@@ -240,6 +255,29 @@ export function parseBarcode(barcode: string): { sku: string; size: number } | n
   return { sku: match[1], size: Number(match[2]) }
 }
 
+/**
+ * Forma canónica de un código para comparar y buscar, tolerante a lectores mal
+ * configurados.
+ *
+ * Un lector "keyboard wedge" teclea el código como pulsaciones, y su
+ * distribución de teclado debe coincidir con la del sistema. Cuando no coincide
+ * (lector en inglés US, Windows en español, lo más común), la tecla del GUION
+ * `-` se escribe como un carácter parecido —típicamente el apóstrofo `'`, y a
+ * veces la tilde `´`, el acento grave `` ` `` o el punto medio `·`—. El código
+ * guardado usa guiones (`SKU-TALLA`), así que sin esto el escaneo de
+ * `12345678A'39` nunca encontraría a `12345678A-39`.
+ *
+ * Ninguno de esos caracteres aparece en un SKU real (letras, dígitos y
+ * guiones), así que revertirlos al guion es seguro. Se aplica en AMBOS lados de
+ * cada comparación: normalizar lo guardado (que ya trae guiones) no lo cambia.
+ */
+export const normalizeBarcode = (raw: string): string =>
+  raw
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, '')
+    .replace(/[’‘'´`·]/g, '-')
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Etiquetas de presentación
 // ─────────────────────────────────────────────────────────────────────────────
@@ -250,6 +288,7 @@ export const MOVEMENT_LABEL: Record<MovementType, string> = {
   return: 'Devolución',
   salida: 'Salida a local',
   retorno: 'Retorno a bodega',
+  baja: 'Baja',
 }
 
 /** Prefijo con signo para el historial: "+3", "−2". */

@@ -28,7 +28,7 @@ const NAV: NavEntry[] = [
   { to: '/scan', label: 'Escanear', icon: 'scan', match: ['/scan'] },
   { to: '/inventory', label: 'Inventario', icon: 'box', match: ['/inventory'] },
   { to: '/locales', label: 'Locales', icon: 'store', match: ['/locales'], roles: ['socio', 'empleado'] },
-  { to: '/history', label: 'Historial', icon: 'list', match: ['/history'], roles: ['socio', 'empleado'] },
+  { to: '/history', label: 'Historial', icon: 'list', match: ['/history'], roles: ['socio', 'empleado', 'bodeguero'] },
   { to: '/dashboard', label: 'Ingresos y egresos', icon: 'chart', match: ['/dashboard'], roles: ['socio'] },
   { to: '/settings', label: 'Configuración', icon: 'settings', match: ['/settings'], ownerOnly: true },
 ]

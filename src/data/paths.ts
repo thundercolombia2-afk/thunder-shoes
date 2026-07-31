@@ -33,6 +33,7 @@ import {
   type DocumentReference,
 } from 'firebase/firestore'
 import { db } from './firebase'
+import { normalizeBarcode } from '@/domain/rules'
 import type { BodegaId, ProductId, Size, StoreId } from '@/domain/models'
 
 export const COLLECTIONS = {
@@ -75,9 +76,13 @@ export const allVariantsRef = () => collectionGroup(db, COLLECTIONS.variants)
 /**
  * Índice inverso: el id del documento es el código de barras. Resolver un
  * escaneo es una lectura directa por id — sin consulta, sin índice, ~1 lectura.
+ *
+ * El id se normaliza (`normalizeBarcode`) para que el guardado y el escaneo
+ * coincidan aunque un lector mal configurado teclee el guion como apóstrofo.
+ * Al escribir no cambia nada: `buildBarcode` ya produce guiones.
  */
 export const barcodeRef = (barcode: string): DocumentReference =>
-  doc(db, COLLECTIONS.barcodes, barcode.trim().toUpperCase())
+  doc(db, COLLECTIONS.barcodes, normalizeBarcode(barcode))
 
 export const movementsRef = (): CollectionReference => collection(db, COLLECTIONS.movements)
 export const movementRef = (id: string): DocumentReference =>
@@ -86,6 +91,8 @@ export const movementRef = (id: string): DocumentReference =>
 /** El id del documento es el dayKey: "2026-07-15". */
 export const dailyStatsRef = (dayKey: string): DocumentReference =>
   doc(db, COLLECTIONS.dailyStats, dayKey)
+/** Toda la colección de agregados diarios (para reiniciar el dashboard). */
+export const dailyStatsCol = (): CollectionReference => collection(db, COLLECTIONS.dailyStats)
 
 /** Egresos cargados a mano por el administrador. */
 export const expensesRef = (): CollectionReference => collection(db, COLLECTIONS.expenses)
