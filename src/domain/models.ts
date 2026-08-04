@@ -270,6 +270,15 @@ export interface Movement {
   targetUserName?: string
 
   /**
+   * Id de la SALIDA de bodega que originó esta venta. Lo llevan las ventas
+   * cobradas desde la pestaña Entregas: en temporada no hay tiempo de cobrar
+   * par por par, así que se despacha desde bodega y más tarde se confirma qué
+   * de lo entregado se vendió. Con esto la entrega sabe cuánto lleva vendido
+   * y cuánto le falta.
+   */
+  deliveryId?: string
+
+  /**
    * Estado de cobro. Solo en ventas. Ausente = `cobrado` (las ventas de
    * siempre). Es el ÚNICO campo del asiento que se puede cambiar después: el
    * dinero de una venta por transportadora entra días más tarde.
@@ -326,6 +335,8 @@ export interface MovementDraft {
   /** Persona destino (salida) u origen (retorno) del traslado. */
   targetUserId?: UserId
   targetUserName?: string
+  /** Solo en ventas cobradas desde una entrega: la salida que las originó. */
+  deliveryId?: string
 }
 
 /** Datos comunes a todas las líneas de una misma venta (el "tiquete"). */

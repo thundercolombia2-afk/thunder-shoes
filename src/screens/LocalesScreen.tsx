@@ -16,9 +16,9 @@ import { errorMessage, movementLocalId, SALE_STATUS_LABEL, saleStatusOf } from '
 import { formatShortDate, formatTime } from '@/lib/format'
 import { Button } from '@/ui/Button'
 import { Money } from '@/ui/Money'
-import { ChipPicker, ModalHeader, movementPlace, SALE_STATUS_TONE, SaleStatusChip } from './_shared'
-import { ErrorNote, Overlay } from './SellModals'
-import type { Bodega, Movement, SaleStatus, Store } from '@/domain/models'
+import { ChipPicker, ModalHeader, movementPlace, QuantityStepper, SALE_STATUS_TONE, SaleStatusChip } from './_shared'
+import { CobroModal, ErrorNote, Overlay } from './SellModals'
+import { mulMoney, type Bodega, type Money as MoneyAmount, type Movement, type SaleStatus, type Store } from '@/domain/models'
 
 type Tab = 'vendido' | 'devuelto' | 'stock' | 'entregas'
 const TABS: { key: Tab; label: string }[] = [
@@ -39,6 +39,8 @@ export function LocalesScreen() {
   const [tab, setTab] = useState<Tab>('vendido')
   /** Línea de venta a la que se le va a dar retorno a bodega. */
   const [returning, setReturning] = useState<Movement | null>(null)
+  /** Entrega de bodega que se está cobrando (se vendió después de recibirla). */
+  const [charging, setCharging] = useState<Movement | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
 
   const reload = useCallback(() => {
@@ -93,6 +95,56 @@ export function LocalesScreen() {
     }
     return acc
   }, [movs])
+  /**
+   * Cuántos pares lleva vendidos cada entrega, según las ventas que se cobraron
+   * desde ella (`deliveryId`). Una venta hecha escaneando NO cuenta aquí: no
+   * hay forma de saber de qué entrega salió ese par. Si ya se vendió por
+   * escáner, el cobro de la entrega falla por stock insuficiente, que es la
+   * red de seguridad real.
+   */
+  const soldByDelivery = useMemo(() => {
+    const acc = new Map<string, number>()
+    // Qué venta salió de qué entrega, para poder devolverle el pendiente si el
+    // cliente devuelve el par: si no, la entrega quedaría "vendida" para
+    // siempre y no se podría volver a cobrar lo que sigue en el local.
+    const deliveryBySale = new Map<string, string>()
+    for (const m of movs) {
+      if (m.type === 'sale' && m.deliveryId) deliveryBySale.set(m.saleId ?? m.id, m.deliveryId)
+    }
+    const bump = (deliveryId: string, delta: number) =>
+      acc.set(deliveryId, (acc.get(deliveryId) ?? 0) + delta)
+    for (const m of movs) {
+      if (m.type === 'sale' && m.deliveryId) bump(m.deliveryId, m.quantity)
+      else if (m.type === 'return') {
+        const deliveryId = deliveryBySale.get(m.saleId ?? m.id)
+        if (deliveryId) bump(deliveryId, -m.quantity)
+      }
+    }
+    return acc
+  }, [movs])
+  const pendingOf = useCallback(
+    (m: Movement) => {
+      // Lo vendido se acota al tamaño de la entrega: una devolución no puede
+      // dejar "por cobrar" más pares de los que se entregaron.
+      const sold = Math.min(m.quantity, Math.max(0, soldByDelivery.get(m.id) ?? 0))
+      return m.quantity - sold
+    },
+    [soldByDelivery],
+  )
+
+  /**
+   * Precio VIGENTE de la variante. El del snapshot de la entrega es el del día
+   * en que salió de bodega, y entre la entrega y el cobro pueden pasar semanas:
+   * la venta se registra al precio de hoy, así que el diálogo tiene que cobrar
+   * ese mismo, o las vueltas en efectivo saldrían mal.
+   */
+  const livePriceOf = useCallback(
+    (variantId: string) =>
+      catalog.find((r) => r.variants.some((v) => String(v.id) === String(variantId)))?.product.price ??
+      null,
+    [catalog],
+  )
+
   const isReturned = useCallback(
     (m: Movement) =>
       (returnedByLine.get(`${m.saleId ?? m.id}:${String(m.variantId)}`) ?? 0) >= m.quantity,
@@ -274,15 +326,33 @@ export function LocalesScreen() {
                 ) : deliveries.length === 0 ? (
                   <Empty text="Todavía no hay entregas registradas a este local." />
                 ) : (
-                  deliveries.map((m) => (
-                    <MovRow
-                      key={m.id}
-                      title={`${m.snapshot.productName} · T${m.snapshot.size}`}
-                      sub={deliverySub(m, stores, bodegas)}
-                      qty={`+${m.quantity}`}
-                      qtyColor="var(--color-success)"
-                    />
-                  ))
+                  deliveries.map((m) => {
+                    const pending = pendingOf(m)
+                    const sold = m.quantity - pending
+                    return (
+                      <MovRow
+                        key={m.id}
+                        title={`${m.snapshot.productName} · T${m.snapshot.size}`}
+                        sub={deliverySub(m, stores, bodegas)}
+                        qty={`+${m.quantity}`}
+                        qtyColor="var(--color-success)"
+                        badge={
+                          sold > 0 ? (
+                            <span style={{ font: '700 10.5px var(--font-body)', padding: '3px 9px', borderRadius: 'var(--radius-pill)', background: SALE_STATUS_TONE.cobrado.chip, color: SALE_STATUS_TONE.cobrado.text, whiteSpace: 'nowrap' }}>
+                              vendido {sold} de {m.quantity}
+                            </span>
+                          ) : undefined
+                        }
+                        actions={
+                          actor && pending > 0 ? (
+                            <Button variant="success" size="sm" onClick={() => setCharging(m)}>
+                              Cobrar{pending < m.quantity ? ` ${pending}` : ''}
+                            </Button>
+                          ) : null
+                        }
+                      />
+                    )
+                  })
                 )}
               </Card>
               <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Muestra las entregas más recientes.</span>
@@ -290,6 +360,21 @@ export function LocalesScreen() {
           )}
         </>
       )}
+
+      {charging && actor ? (
+        <CobrarEntregaModal
+          delivery={charging}
+          maxQuantity={pendingOf(charging)}
+          unitPrice={livePriceOf(charging.variantId) ?? charging.snapshot.unitPrice}
+          storeCode={store?.code ?? ''}
+          actor={actor}
+          onClose={() => setCharging(null)}
+          onDone={() => {
+            setCharging(null)
+            reload()
+          }}
+        />
+      ) : null}
 
       {returning && actor ? (
         <ReturnToBodegaModal
@@ -399,6 +484,108 @@ function SaleRow({
             ) : null}
           </>
         ) : null
+      }
+    />
+  )
+}
+
+/**
+ * Cobrar lo que se entregó desde bodega y se vendió DESPUÉS.
+ *
+ * En temporada no hay tiempo de cobrar par por par: se despacha la mercancía
+ * desde bodega y más tarde, con calma, se confirma qué de lo entregado se
+ * vendió. Registra una venta de verdad —descuenta el stock del local que
+ * recibió y la plata entra al día— amarrada a la entrega, para que la fila
+ * sepa cuánto le falta por vender. Pide los mismos datos que el cobro normal,
+ * así que vender por transportadora desde aquí también nace "pendiente".
+ */
+function CobrarEntregaModal({
+  delivery,
+  maxQuantity,
+  unitPrice,
+  storeCode,
+  actor,
+  onClose,
+  onDone,
+}: {
+  delivery: Movement
+  /** Pares de esa entrega que todavía no se han cobrado. */
+  maxQuantity: number
+  /** Precio vigente del par: es al que se va a registrar la venta. */
+  unitPrice: MoneyAmount
+  storeCode: string
+  actor: MovementActor
+  onClose: () => void
+  onDone: () => void
+}) {
+  const [quantity, setQuantity] = useState(1)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  // El local es el DESTINO de la entrega, no el de quien mira la pantalla: la
+  // venta descuenta de donde está el zapato y se le abona a ese local.
+  const localId = movementLocalId(delivery)
+  const total = mulMoney(unitPrice, quantity)
+
+  const submit = async (payment: string, customerName: string, customerPhone: string) => {
+    setBusy(true)
+    setError('')
+    try {
+      await movementRepository.recordMany(
+        [
+          {
+            type: 'sale',
+            variantId: delivery.variantId,
+            quantity,
+            fromLocation: storeKey(localId),
+            deliveryId: delivery.id,
+          },
+        ],
+        { ...actor, storeId: localId as MovementActor['storeId'] },
+        {
+          payment,
+          ...(customerName ? { customerName } : {}),
+          ...(customerPhone ? { customerPhone } : {}),
+        },
+      )
+      onDone()
+    } catch (e) {
+      setError(errorMessage(e))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <CobroModal
+      total={total}
+      fromStore={storeCode ? `Local ${storeCode}` : ''}
+      busy={busy}
+      error={error}
+      title="Cobrar entrega"
+      confirmLabel="Registrar venta"
+      onClose={onClose}
+      onConfirm={(payment, name, phone) => void submit(payment, name, phone)}
+      extra={
+        <div style={{ marginTop: 14, background: 'var(--surface-muted)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-lg)', padding: '13px 16px' }}>
+          <div style={{ font: '700 15px var(--font-display)' }}>
+            {delivery.snapshot.productName} · T{delivery.snapshot.size}
+          </div>
+          <div style={{ fontSize: 12.5, color: 'var(--text-muted)', marginTop: 3 }}>
+            Entregados {delivery.quantity} · por cobrar {maxQuantity}
+            {delivery.targetUserName ? ` · para ${delivery.targetUserName}` : ''}
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 6, lineHeight: 1.45 }}>
+            Úsalo solo si esta venta <b>no se cobró ya con el escáner</b>: una venta escaneada no
+            se puede amarrar a una entrega, así que cobrarla aquí de nuevo la registraría dos veces.
+          </div>
+          <div style={{ marginTop: 12 }}>
+            <QuantityStepper
+              value={quantity}
+              onDec={() => setQuantity((q) => Math.max(1, q - 1))}
+              onInc={() => setQuantity((q) => Math.min(maxQuantity, q + 1))}
+            />
+          </div>
+        </div>
       }
     />
   )

@@ -186,6 +186,7 @@ export const movementRepository = {
         // A quién se le entregó / de quién se recibió (traslados de bodega).
         if (draft.targetUserId) movement.targetUserId = draft.targetUserId
         if (draft.targetUserName) movement.targetUserName = draft.targetUserName
+        if (draft.deliveryId) movement.deliveryId = draft.deliveryId
         // Estado de cobro: solo en ventas, y solo si no es el normal (cobrado),
         // para no engordar cada asiento del libro mayor con un valor por defecto.
         if (draft.type === 'sale') {

@@ -480,6 +480,7 @@ export const demoBackend = {
       if (eff.toLocation) movement.toLocation = eff.toLocation
       if (draft.targetUserId) movement.targetUserId = draft.targetUserId
       if (draft.targetUserName) movement.targetUserName = draft.targetUserName
+      if (draft.deliveryId) movement.deliveryId = draft.deliveryId
       if (draft.type === 'sale') {
         const status = defaultSaleStatus(meta?.payment)
         if (status !== 'cobrado') movement.saleStatus = status

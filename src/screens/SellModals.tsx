@@ -197,6 +197,9 @@ export function CobroModal({
   fromStore,
   busy,
   error,
+  title = 'Cobro',
+  confirmLabel = 'Confirmar venta',
+  extra,
   onClose,
   onConfirm,
 }: {
@@ -205,6 +208,14 @@ export function CobroModal({
   fromStore: string
   busy: boolean
   error: string
+  title?: string
+  confirmLabel?: string
+  /**
+   * Bloque propio de quien abre el diálogo, encima del total. Lo usa el cobro
+   * de una entrega de bodega para preguntar CUÁNTOS de los pares entregados se
+   * vendieron; el resto del cobro (pago, cliente, vueltas) es idéntico.
+   */
+  extra?: ReactNode
   onClose: () => void
   onConfirm: (payment: string, customerName: string, customerPhone: string) => void
 }) {
@@ -225,7 +236,7 @@ export function CobroModal({
   return (
     <Overlay onClose={onClose} width={430}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <h2 style={{ margin: 0, font: '700 22px var(--font-display)' }}>Cobro</h2>
+        <h2 style={{ margin: 0, font: '700 22px var(--font-display)' }}>{title}</h2>
         <button
           onClick={onClose}
           style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 22, lineHeight: 1 }}
@@ -234,6 +245,8 @@ export function CobroModal({
           ✕
         </button>
       </div>
+
+      {extra}
 
       <TotalBanner label="Total a pagar" value={total} />
 
@@ -355,7 +368,7 @@ export function CobroModal({
         <GhostButton label="Cancelar" onClick={onClose} />
         <AccentButton
           grow
-          label={busy ? 'Registrando…' : 'Confirmar venta'}
+          label={busy ? 'Registrando…' : confirmLabel}
           disabled={busy || cashShort || otherMissing}
           onClick={() => onConfirm(effectivePayment, customer.trim(), phone.trim())}
         />

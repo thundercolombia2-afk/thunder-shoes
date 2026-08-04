@@ -180,6 +180,7 @@ export const movementFromDoc = (snap: QueryDocumentSnapshot<DocumentData>): Move
   if (d.customerPhone) movement.customerPhone = String(d.customerPhone)
   if (d.targetUserId) movement.targetUserId = String(d.targetUserId) as UserId
   if (d.targetUserName) movement.targetUserName = String(d.targetUserName)
+  if (d.deliveryId) movement.deliveryId = String(d.deliveryId)
   if (isSaleStatus(d.saleStatus)) movement.saleStatus = d.saleStatus
   if (d.saleStatusAt) movement.saleStatusAt = toDate(d.saleStatusAt)
   if (d.saleStatusBy) movement.saleStatusBy = String(d.saleStatusBy)
