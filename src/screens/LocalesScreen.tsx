@@ -21,11 +21,12 @@ import { CobroModal, ErrorNote, Overlay } from './SellModals'
 import { mulMoney, type Bodega, type Money as MoneyAmount, type Movement, type SaleStatus, type Store } from '@/domain/models'
 
 type Tab = 'vendido' | 'devuelto' | 'stock' | 'entregas'
+// Entregas va primero: es lo primero que revisa el local al abrir la pantalla.
 const TABS: { key: Tab; label: string }[] = [
+  { key: 'entregas', label: 'Entregas' },
   { key: 'vendido', label: 'Vendido' },
   { key: 'devuelto', label: 'Devuelto' },
   { key: 'stock', label: 'Stock' },
-  { key: 'entregas', label: 'Entregas' },
 ]
 
 export function LocalesScreen() {
@@ -36,7 +37,7 @@ export function LocalesScreen() {
   const [movs, setMovs] = useState<Movement[]>([])
   const [loading, setLoading] = useState(true)
   const [storeId, setStoreId] = useState('')
-  const [tab, setTab] = useState<Tab>('vendido')
+  const [tab, setTab] = useState<Tab>('entregas')
   /** Línea de venta a la que se le va a dar retorno a bodega. */
   const [returning, setReturning] = useState<Movement | null>(null)
   /** Entrega de bodega que se está cobrando (se vendió después de recibirla). */

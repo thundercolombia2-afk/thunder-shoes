@@ -137,13 +137,29 @@ function MobileShell({
         position: 'relative',
       }}
     >
+      {/* Franja de marca: separa el contenido de las barras del celular (barra de
+          estado, notch, barra de direcciones) para que la hamburguesa quede
+          siempre alcanzable. */}
+      <div
+        style={{
+          flex: 'none',
+          paddingTop: 'env(safe-area-inset-top, 0px)',
+          background: 'var(--iw-plum-darkest)',
+        }}
+      >
+        <div style={{ height: 34, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7 }}>
+          <Icon name="bolt" size={14} color="var(--iw-yellow)" />
+          <span style={{ font: '800 12px var(--font-display)', color: '#fff', letterSpacing: '.16em' }}>THUNDER</span>
+        </div>
+      </div>
+
       <header
         style={{
           flex: 'none',
           display: 'flex',
           alignItems: 'center',
           gap: 10,
-          padding: '12px 14px 11px',
+          padding: '10px 14px 11px',
           background: 'var(--iw-plum-darkest)',
           borderBottom: '1px solid rgba(255,255,255,.08)',
         }}
@@ -182,7 +198,7 @@ function MobileShell({
           <nav
             onClick={(e) => e.stopPropagation()}
             className="iw-scroll"
-            style={{ width: 268, maxWidth: '82%', height: '100%', background: 'var(--iw-plum-darkest)', display: 'flex', flexDirection: 'column', padding: '16px 12px', gap: 4, overflowY: 'auto' }}
+            style={{ width: 268, maxWidth: '82%', height: '100%', background: 'var(--iw-plum-darkest)', display: 'flex', flexDirection: 'column', padding: 'calc(16px + env(safe-area-inset-top, 0px)) 12px 16px', gap: 4, overflowY: 'auto' }}
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '4px 8px 14px' }}>
               <div style={{ width: 32, height: 32, borderRadius: 9, background: 'var(--iw-yellow)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
