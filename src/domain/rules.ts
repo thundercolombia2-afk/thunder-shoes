@@ -9,13 +9,15 @@ import {
   type MovementDraft,
   type MovementType,
   type Product,
+  type SaleStatus,
   type Size,
   type Variant,
+  DEFERRED_PAYMENTS,
   money,
   mulMoney,
   subMoney,
 } from './models'
-import { stockAt } from './locations'
+import { parseLocationKey, stockAt } from './locations'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Errores de dominio
@@ -30,6 +32,7 @@ export type DomainErrorCode =
   | 'MISSING_RETURN_REASON'
   | 'MISSING_BAJA_REASON'
   | 'HAS_STOCK'
+  | 'ALREADY_RETURNED'
 
 export class DomainError extends Error {
   constructor(
@@ -62,6 +65,8 @@ export const errorMessage = (error: unknown): string => {
         return 'Selecciona el motivo de la baja.'
       case 'HAS_STOCK':
         return 'No se puede eliminar una referencia con stock. Primero dala de baja.'
+      case 'ALREADY_RETURNED':
+        return 'Este par ya se había devuelto de esa venta. Revisa la pestaña Devuelto.'
     }
   }
   return 'Ocurrió un error. Intenta de nuevo.'
@@ -183,7 +188,9 @@ export function calculateMovement(
   product: Pick<Product, 'price' | 'cost'>,
   variant: Pick<Variant, 'stock'>,
 ): MovementTotals {
-  const unitPrice = product.price
+  // Los overrides existen para que una devolución revierta EXACTAMENTE los
+  // importes de su venta, aunque el precio o el costo hayan cambiado después.
+  const unitPrice = draft.unitPriceOverride ?? product.price
   const unitCost = draft.unitCostOverride ?? product.cost
   const unitMargin = subMoney(unitPrice, unitCost)
   const stockDelta = stockDeltaFor(draft.type, draft.quantity)
@@ -294,3 +301,92 @@ export const MOVEMENT_LABEL: Record<MovementType, string> = {
 /** Prefijo con signo para el historial: "+3", "−2". */
 export const signedQuantity = (movement: Pick<Movement, 'type' | 'quantity'>): string =>
   `${stockDirection(movement.type) > 0 ? '+' : '−'}${movement.quantity}`
+
+/**
+ * Valor del movimiento AL PRECIO DE VENTA, siempre.
+ *
+ * `Movement.total` se valora al costo en entradas, traslados y bajas: eso es lo
+ * correcto para la contabilidad (una entrada vale lo que se le pagó al
+ * proveedor) pero es lo que NO se quiere ver en el historial — la pregunta que
+ * responde esa pantalla es "¿en cuánto se vende ese zapato?", y además el costo
+ * es dato sensible que no debe asomarse a quien vende. Por eso el historial
+ * pinta esto y no `total`.
+ */
+export const saleValue = (movement: Pick<Movement, 'snapshot' | 'quantity'>): Money =>
+  mulMoney(movement.snapshot.unitPrice, movement.quantity)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Ubicación y personas de un movimiento
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * El LOCAL por el que pasó el zapato, mirando las ubicaciones reales y no
+ * `storeId` — que es el local de QUIEN REGISTRÓ el movimiento, y por eso miente
+ * dos veces: viene vacío cuando lo registra un bodeguero (no tiene local), y
+ * apunta al local equivocado cuando alguien del 163 registra una baja del 173.
+ *
+ * Se mira el extremo donde el zapato ESTUVO en manos del local:
+ *  · sale, baja        → el origen (de dónde salió).
+ *  · purchase, return  → el destino (a dónde entró).
+ *  · salida            → el destino (a qué local se le entregó).
+ *  · retorno           → el origen (de qué local volvió).
+ *
+ * Devuelve `null` si ese extremo es una bodega (una entrada de mercancía no
+ * pasa por ningún local) o si no hay local que atribuir. Los movimientos
+ * viejos, anteriores al stock por ubicación, caen a `storeId`.
+ */
+export function movementStoreId(
+  m: Pick<Movement, 'type' | 'storeId' | 'fromLocation' | 'toLocation'>,
+): string | null {
+  const key =
+    m.type === 'sale' || m.type === 'baja' || m.type === 'retorno' ? m.fromLocation : m.toLocation
+  if (key) {
+    const ref = parseLocationKey(key)
+    return ref?.kind === 'store' ? ref.id : null
+  }
+  return String(m.storeId) || null
+}
+
+/**
+ * El local al que se ATRIBUYE el movimiento para contarlo y filtrarlo. Es
+ * `movementStoreId` con el respaldo de `storeId` cuando el movimiento no toca
+ * ningún local: la devolución que entra directo a bodega no pasa por el local,
+ * pero sigue siendo plata que sale de las ventas del local que la vendió, y es
+ * ahí donde tiene que verse. Todo lo que filtre o sume por local usa ESTA,
+ * para que la columna y el filtro nunca digan cosas distintas.
+ */
+export const movementLocalId = (
+  m: Pick<Movement, 'type' | 'storeId' | 'fromLocation' | 'toLocation'>,
+): string => movementStoreId(m) ?? String(m.storeId)
+
+/** La BODEGA que toca el movimiento (entrada, salida o retorno), si la hay. */
+export function movementBodegaId(
+  m: Pick<Movement, 'type' | 'fromLocation' | 'toLocation'>,
+): string | null {
+  for (const key of [m.fromLocation, m.toLocation]) {
+    if (!key) continue
+    const ref = parseLocationKey(key)
+    if (ref?.kind === 'bodega') return ref.id
+  }
+  return null
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Estado de cobro de una venta
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Estado de una línea de venta. Las ventas viejas (sin campo) son `cobrado`. */
+export const saleStatusOf = (m: Pick<Movement, 'saleStatus'>): SaleStatus =>
+  m.saleStatus ?? 'cobrado'
+
+/** Una venta por transportadora nace pendiente: la plata entra días después. */
+export const defaultSaleStatus = (payment: string | undefined): SaleStatus =>
+  // El medio de pago viaja como texto libre (con "Otro" la cajera escribe el
+  // suyo), así que se compara contra la lista en vez de tiparlo.
+  payment && (DEFERRED_PAYMENTS as readonly string[]).includes(payment) ? 'pendiente' : 'cobrado'
+
+export const SALE_STATUS_LABEL: Record<SaleStatus, string> = {
+  cobrado: 'Cobrado',
+  pendiente: 'Pendiente',
+  devuelto: 'Devuelto',
+}

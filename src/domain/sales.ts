@@ -53,6 +53,37 @@ export function matchesCustomer(m: Movement, needle: string): boolean {
 }
 
 /**
+ * ¿Este movimiento coincide con lo que la persona escribió en el buscador?
+ *
+ * Busca por lo que uno recuerda: el zapato (nombre, SKU o código), el cliente,
+ * quién lo registró, a quién se le entregó, o la forma de pago. Normaliza
+ * tildes en los dos lados — sin eso, buscar "Interrapidisimo" no encontraba
+ * nada. Es la MISMA función en el historial y en la hoja de ingresos, para que
+ * el mismo texto dé el mismo resultado en las dos pantallas.
+ */
+export function matchesMovement(m: Movement, term: string): boolean {
+  return matchesFields(
+    [
+      m.snapshot.productName,
+      m.snapshot.sku,
+      m.snapshot.barcode,
+      m.customerName ?? '',
+      m.userName,
+      m.targetUserName ?? '',
+      m.payment ?? '',
+    ],
+    term,
+  )
+}
+
+/** ¿Alguno de estos campos contiene lo buscado? Ignora tildes en ambos lados. */
+export function matchesFields(fields: string[], term: string): boolean {
+  const needle = normalize(term)
+  if (!needle) return true
+  return fields.some((field) => normalize(field).includes(needle))
+}
+
+/**
  * Agrupa asientos sueltos en ventas. Las ventas suman `sold`; las devoluciones
  * que cuelgan del mismo `saleId` suman `returned`, así la pantalla nunca deja
  * devolver dos veces el mismo par.

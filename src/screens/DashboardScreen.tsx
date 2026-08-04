@@ -9,8 +9,11 @@ import { useCatalog, useStats, useStores } from '@/app/hooks'
 import { useSession } from '@/app/session'
 import { movementRepository } from '@/data/repositories/movementRepository'
 import { expenseRepository } from '@/data/repositories/expenseRepository'
+import { movementLocalId } from '@/domain/rules'
+import { matchesFields, matchesMovement } from '@/domain/sales'
 import { formatLongDate, formatMoney, formatMoneyInput, formatShortDate, parseMoneyInput } from '@/lib/format'
-import { RoleBadge } from './_shared'
+import { RoleBadge, storeCodeOf } from './_shared'
+import { SearchBox } from './InventoryScreen'
 import { Icon } from '@/ui/Icon'
 import { Money } from '@/ui/Money'
 import { money, type DailyStats, type Expense, type ExpenseDraft, type Movement, type Store } from '@/domain/models'
@@ -138,32 +141,111 @@ export function DashboardScreen() {
 }
 
 /** Tabla de INGRESOS: las ventas (concepto, detalle, cantidad, valor, fecha,
- *  local, vendedor), de más reciente a más antigua. */
+ *  local, vendedor), de más reciente a más antigua. Se puede filtrar por local
+ *  y por texto (zapato, cliente o vendedor). */
 function IncomeTab({ incomes, stores }: { incomes: Movement[]; stores: Store[] }) {
-  const storeCode = (id: string) => stores.find((s) => s.id === id)?.code ?? id
-  const total = incomes.reduce((s, m) => s + m.total, 0)
-  const units = incomes.reduce((s, m) => s + m.quantity, 0)
+  const [storeId, setStoreId] = useState('')
+  const [search, setSearch] = useState('')
+
+  const rows = useMemo(
+    () => incomes.filter((m) => matchesStore(m, storeId) && matchesMovement(m, search)),
+    [incomes, storeId, search],
+  )
+
+  const total = rows.reduce((s, m) => s + m.total, 0)
+  const units = rows.reduce((s, m) => s + m.quantity, 0)
   return (
     <section style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      <SummaryBar label={`${incomes.length} ${incomes.length === 1 ? 'venta' : 'ventas'} · ${units} pares`} value={<Money value={total} />} />
+      <FilterBar
+        search={search}
+        onSearch={setSearch}
+        placeholder="Zapato, cliente o vendedor…"
+        stores={stores}
+        storeId={storeId}
+        onStore={setStoreId}
+      />
+      <SummaryBar label={`${rows.length} ${rows.length === 1 ? 'venta' : 'ventas'} · ${units} pares`} value={<Money value={total} />} />
       <TableCard headers={['Concepto', 'Detalle', 'Cant.', 'Valor', 'Fecha', 'Local', 'Vendedor']}>
-        {incomes.length === 0 ? (
-          <EmptyRow cols={7} text="Todavía no hay ventas registradas." />
+        {rows.length === 0 ? (
+          <EmptyRow cols={7} text={incomes.length === 0 ? 'Todavía no hay ventas registradas.' : 'Ninguna venta coincide con el filtro.'} />
         ) : (
-          incomes.map((m) => (
+          rows.map((m) => (
             <tr key={m.id} style={{ borderTop: '1px solid var(--border-subtle)' }}>
               <Td><b>Venta</b></Td>
               <Td>{m.snapshot.productName} · T{m.snapshot.size}{m.payment ? ` · ${m.payment}` : ''}</Td>
               <Td>{m.quantity}</Td>
               <Td strong><Money value={m.total} /></Td>
               <Td>{formatShortDate(m.occurredAt)}</Td>
-              <Td>{storeCode(m.storeId)}</Td>
+              <Td>{storeCodeOf(stores, movementLocalId(m))}</Td>
               <Td>{m.userName}</Td>
             </tr>
           ))
         )}
       </TableCard>
     </section>
+  )
+}
+
+// ── Filtros ──────────────────────────────────────────────────────────────────
+
+/**
+ * ¿La venta ocurrió en este local? Se mira la ubicación real del movimiento y
+ * no solo `storeId`, por los asientos que registró alguien sin local propio.
+ */
+const matchesStore = (m: Movement, storeId: string): boolean =>
+  !storeId || movementLocalId(m) === storeId
+
+/**
+ * Buscador + selector de local. El buscador es el MISMO `SearchBox` del
+ * inventario y del historial, para que las tres pantallas se busquen igual.
+ */
+function FilterBar({
+  search,
+  onSearch,
+  placeholder,
+  stores,
+  storeId,
+  onStore,
+}: {
+  search: string
+  onSearch: (value: string) => void
+  placeholder: string
+  stores?: Store[]
+  storeId?: string
+  onStore?: (value: string) => void
+}) {
+  return (
+    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+      <div style={{ flex: 1, minWidth: 180 }}>
+        <SearchBox value={search} onChange={onSearch} placeholder={placeholder} />
+      </div>
+      {stores && onStore ? (
+        <select
+          value={storeId ?? ''}
+          onChange={(e) => onStore(e.target.value)}
+          style={{
+            height: 44,
+            padding: '0 12px',
+            minWidth: 150,
+            border: '1.5px solid var(--border-subtle)',
+            borderRadius: 'var(--radius-md)',
+            font: '600 14px var(--font-body)',
+            background: 'var(--surface-card)',
+            color: 'var(--text-primary)',
+            cursor: 'pointer',
+            outline: 'none',
+            boxSizing: 'border-box',
+          }}
+        >
+          <option value="">Todos los locales</option>
+          {stores.map((s) => (
+            <option key={s.id} value={s.id}>
+              Local {s.code}
+            </option>
+          ))}
+        </select>
+      ) : null}
+    </div>
   )
 }
 
@@ -180,8 +262,14 @@ function ExpenseTab({
 }) {
   const [form, setForm] = useState<{ mode: 'new' } | { mode: 'edit'; expense: Expense } | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
+  const [search, setSearch] = useState('')
 
-  const total = expenses.reduce((s, e) => s + e.value, 0)
+  const rows = useMemo(
+    () => expenses.filter((e) => matchesFields([e.concept, e.detail, e.userName], search)),
+    [expenses, search],
+  )
+
+  const total = rows.reduce((s, e) => s + e.value, 0)
 
   const del = async (e: Expense) => {
     if (!window.confirm(`¿Eliminar el egreso "${e.concept}" por ${formatMoney(e.value)}?`)) return
@@ -197,9 +285,10 @@ function ExpenseTab({
 
   return (
     <section style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <FilterBar search={search} onSearch={setSearch} placeholder="Concepto, detalle o quién lo registró…" />
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <div style={{ flex: 1, minWidth: 180 }}>
-          <SummaryBar label={`${expenses.length} ${expenses.length === 1 ? 'egreso' : 'egresos'}`} value={<Money value={total} />} />
+          <SummaryBar label={`${rows.length} ${rows.length === 1 ? 'egreso' : 'egresos'}`} value={<Money value={total} />} />
         </div>
         {canAdd ? (
           <button
@@ -217,10 +306,13 @@ function ExpenseTab({
       ) : null}
 
       <TableCard headers={canAdd ? ['Concepto', 'Detalle', 'Cant.', 'Valor', 'Fecha', 'Registró', ''] : ['Concepto', 'Detalle', 'Cant.', 'Valor', 'Fecha', 'Registró']}>
-        {expenses.length === 0 ? (
-          <EmptyRow cols={canAdd ? 7 : 6} text="Todavía no hay egresos registrados." />
+        {rows.length === 0 ? (
+          <EmptyRow
+            cols={canAdd ? 7 : 6}
+            text={expenses.length === 0 ? 'Todavía no hay egresos registrados.' : 'Ningún egreso coincide con el filtro.'}
+          />
         ) : (
-          expenses.map((e) => (
+          rows.map((e) => (
             <tr key={e.id} style={{ borderTop: '1px solid var(--border-subtle)', opacity: busyId === e.id ? 0.5 : 1 }}>
               <Td><b>{e.concept}</b></Td>
               <Td>{e.detail || '—'}</Td>

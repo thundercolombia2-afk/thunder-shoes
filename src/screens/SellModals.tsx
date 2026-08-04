@@ -22,8 +22,10 @@ import { formatMoney, formatMoneyInput, formatShortDate, formatTime, parseMoneyI
 import type { CartLine } from '@/app/cart'
 
 // ── Piezas comunes ───────────────────────────────────────────────────────────
+// `Overlay` y `ErrorNote` los reutilizan otros modales de la app (ver
+// LocalesScreen): un solo marco para que todos los diálogos se vean igual.
 
-function Overlay({ onClose, children, width = 440 }: { onClose: () => void; children: ReactNode; width?: number }) {
+export function Overlay({ onClose, children, width = 440 }: { onClose: () => void; children: ReactNode; width?: number }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
@@ -168,7 +170,7 @@ function AccentButton({
   )
 }
 
-function ErrorNote({ text }: { text: string }) {
+export function ErrorNote({ text }: { text: string }) {
   if (!text) return null
   return (
     <div

@@ -4,9 +4,15 @@ import type { ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useSession } from '@/app/session'
 import { Icon } from '@/ui/Icon'
-import type { VariantWithProduct } from '@/domain/models'
+import type { Bodega, Movement, SaleStatus, Store, VariantWithProduct } from '@/domain/models'
 import { ROLE_LABEL, type Role } from '@/domain/users'
-import { variantStatus, type StockStatus } from '@/domain/rules'
+import {
+  movementBodegaId,
+  movementStoreId,
+  SALE_STATUS_LABEL,
+  variantStatus,
+  type StockStatus,
+} from '@/domain/rules'
 
 /** Enlace de "volver" con chevron, como en el diseño. */
 export function BackLink({ label, onClick }: { label: string; onClick: () => void }) {
@@ -219,6 +225,128 @@ export function InventoryLayout({
       <InventoryTabs active={active} />
       {children}
     </div>
+  )
+}
+
+// ── Dónde y con quién ocurrió un movimiento ──────────────────────────────────
+
+/**
+ * Ubicaciones y persona de un movimiento, ya resueltas a nombres legibles.
+ * Vive aquí y no en una pantalla porque lo consultan tres: el historial, los
+ * locales y la hoja de ingresos.
+ */
+export interface MovementPlace {
+  /** Local involucrado: "163". Vacío si el movimiento no toca ningún local. */
+  store: string
+  /** Bodega involucrada: "Bodega 1". Vacía si no toca ninguna. */
+  bodega: string
+  /** Persona que recibió (salida) o de la que volvió (retorno) el par. */
+  person: string
+}
+
+/** Código visible de un local ("163") a partir de su id. */
+export const storeCodeOf = (stores: Store[], storeId: string): string =>
+  stores.find((s) => s.id === storeId)?.code ?? storeId
+
+export function movementPlace(m: Movement, stores: Store[], bodegas: Bodega[]): MovementPlace {
+  const storeId = movementStoreId(m)
+  const bodegaId = movementBodegaId(m)
+  return {
+    store: storeId ? storeCodeOf(stores, storeId) : '',
+    bodega: bodegaId ? (bodegas.find((b) => b.id === bodegaId)?.code ?? 'Bodega') : '',
+    person: m.targetUserName ?? '',
+  }
+}
+
+// ── Piezas de diálogo y selección ────────────────────────────────────────────
+
+/** Encabezado de un modal: título a la izquierda y la ✕ de cerrar a la derecha. */
+export function ModalHeader({ title, onClose }: { title: string; onClose: () => void }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+      <h2 style={{ margin: 0, font: '700 21px var(--font-display)' }}>{title}</h2>
+      <button
+        onClick={onClose}
+        aria-label="Cerrar"
+        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 22, lineHeight: 1 }}
+      >
+        ✕
+      </button>
+    </div>
+  )
+}
+
+/**
+ * Fila de botones-pastilla para elegir UNO de varios (una bodega, un local).
+ * Es el patrón que se repetía en cada pantalla que ofrece ubicaciones.
+ */
+export function ChipPicker<T extends { id: string }>({
+  items,
+  selectedId,
+  onSelect,
+  label,
+  size = 'md',
+}: {
+  items: T[]
+  selectedId: string
+  onSelect: (id: string) => void
+  label: (item: T) => string
+  size?: 'md' | 'lg'
+}) {
+  return (
+    <div style={{ display: 'flex', gap: size === 'lg' ? 10 : 8, flexWrap: 'wrap' }}>
+      {items.map((item) => {
+        const on = item.id === selectedId
+        return (
+          <button
+            key={item.id}
+            onClick={() => onSelect(item.id)}
+            className="iw-press"
+            style={{
+              padding: size === 'lg' ? '11px 18px' : '9px 15px',
+              borderRadius: 'var(--radius-lg)',
+              border: `1.5px solid ${on ? 'var(--iw-plum)' : 'var(--border-subtle)'}`,
+              background: on ? 'var(--iw-plum)' : 'var(--surface-card)',
+              color: on ? '#fff' : 'var(--text-secondary)',
+              font: `700 ${size === 'lg' ? 14 : 13.5}px var(--font-body)`,
+              cursor: 'pointer',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {label(item)}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+// ── Estado de cobro ──────────────────────────────────────────────────────────
+
+/** Colores del estado de cobro. Una sola fuente para todas las pantallas. */
+export const SALE_STATUS_TONE: Record<SaleStatus, { border: string; text: string; chip: string }> = {
+  cobrado: { border: 'rgba(21,119,79,.3)', text: 'var(--color-success)', chip: 'rgba(21,119,79,.12)' },
+  pendiente: { border: 'rgba(255,209,0,.55)', text: '#8a6d00', chip: 'rgba(255,209,0,.22)' },
+  devuelto: { border: 'rgba(224,52,29,.3)', text: 'var(--color-danger)', chip: 'rgba(224,52,29,.1)' },
+}
+
+/** Distintivo "Cobrado / Pendiente / Devuelto" de una línea de venta. */
+export function SaleStatusChip({ status, size = 'md' }: { status: SaleStatus; size?: 'sm' | 'md' }) {
+  const tone = SALE_STATUS_TONE[status]
+  return (
+    <span
+      style={{
+        display: 'inline-block',
+        font: `700 ${size === 'sm' ? 10 : 10.5}px var(--font-body)`,
+        padding: size === 'sm' ? '2px 7px' : '3px 9px',
+        borderRadius: 'var(--radius-pill)',
+        background: tone.chip,
+        color: tone.text,
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {SALE_STATUS_LABEL[status]}
+    </span>
   )
 }
 

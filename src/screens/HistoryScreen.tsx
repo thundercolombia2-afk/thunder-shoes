@@ -5,15 +5,23 @@
  */
 
 import { useEffect, useMemo, useState } from 'react'
-import { useMovements } from '@/app/hooks'
+import { useBodegas, useMovements, useStores } from '@/app/hooks'
 import { useSession } from '@/app/session'
 import { movementRepository } from '@/data/repositories/movementRepository'
 import { configRepository } from '@/data/repositories/configRepository'
-import { MOVEMENT_LABEL, errorMessage, signedQuantity } from '@/domain/rules'
+import {
+  MOVEMENT_LABEL,
+  errorMessage,
+  SALE_STATUS_LABEL,
+  saleStatusOf,
+  saleValue,
+  signedQuantity,
+} from '@/domain/rules'
+import { matchesMovement } from '@/domain/sales'
 import { MOVEMENT_TYPES, type Movement, type MovementType } from '@/domain/models'
 import { formatMoney, formatShortDate, recentDayKeys } from '@/lib/format'
 import { downloadCsv, toCsv } from '@/lib/csv'
-import { RoleBadge } from './_shared'
+import { movementPlace, RoleBadge, SaleStatusChip, type MovementPlace } from './_shared'
 import { SearchBox } from './InventoryScreen'
 import { Icon } from '@/ui/Icon'
 
@@ -34,6 +42,8 @@ const TONE: Record<MovementType, string> = {
 
 export function HistoryScreen() {
   const { user, can } = useSession()
+  const { data: stores } = useStores()
+  const bodegas = useBodegas()
   const seeCosts = can('seeCosts')
   const canWipe = user?.owner === true // vaciar historial: solo la dueña
   // El bodeguero ve un historial acotado: solo SUS entregas (salidas) y recibos
@@ -55,19 +65,14 @@ export function HistoryScreen() {
     typeFilter === 'all' ? {} : { type: typeFilter },
   )
 
-  const term = search.trim().toLowerCase()
   const rows = useMemo(
     () =>
       movements.filter(
         (m) =>
           // El bodeguero solo ve lo que ÉL mismo entregó o recibió.
-          (!isBodeguero || m.userId === user?.id) &&
-          (!term ||
-            m.snapshot.productName.toLowerCase().includes(term) ||
-            m.snapshot.barcode.toLowerCase().includes(term) ||
-            m.snapshot.sku.toLowerCase().includes(term)),
+          (!isBodeguero || m.userId === user?.id) && matchesMovement(m, search),
       ),
-    [movements, term, isBodeguero, user?.id],
+    [movements, search, isBodeguero, user?.id],
   )
 
   const exportCsv = async () => {
@@ -77,26 +82,37 @@ export function HistoryScreen() {
       const keys = recentDayKeys(31)
       const all = await movementRepository.listForExport(keys[0]!, keys.at(-1)!)
       const headers = [
-        'Fecha', 'Tipo', 'Referencia', 'Codigo', 'Talla', 'Cantidad', 'Local', 'Usuario',
-        'Cliente', 'Telefono', 'Pago', 'Venta', 'Total', 'Utilidad',
+        'Fecha', 'Tipo', 'Referencia', 'Codigo', 'Talla', 'Cantidad', 'Local', 'Bodega',
+        'Usuario', 'Entregado a', 'Cliente', 'Telefono', 'Pago', 'Estado', 'Venta',
+        'Valor venta', 'Valor costeado', 'Utilidad',
       ]
-      const data = all.map((m) => [
-        formatShortDate(m.occurredAt),
-        MOVEMENT_LABEL[m.type],
-        m.snapshot.productName,
-        m.snapshot.barcode,
-        m.snapshot.size,
-        m.quantity,
-        m.storeId,
-        m.userName,
-        m.customerName ?? '',
-        m.customerPhone ?? '',
-        m.payment ?? '',
-        // El id de venta permite reagrupar en Excel las líneas de un tiquete.
-        m.saleId ?? m.id,
-        m.total,
-        seeCosts ? m.margin : '',
-      ])
+      const data = all.map((m) => {
+        const place = movementPlace(m, stores, bodegas)
+        return [
+          formatShortDate(m.occurredAt),
+          MOVEMENT_LABEL[m.type],
+          m.snapshot.productName,
+          m.snapshot.barcode,
+          m.snapshot.size,
+          m.quantity,
+          place.store,
+          place.bodega,
+          m.userName,
+          place.person,
+          m.customerName ?? '',
+          m.customerPhone ?? '',
+          m.payment ?? '',
+          m.type === 'sale' ? SALE_STATUS_LABEL[saleStatusOf(m)] : '',
+          // El id de venta permite reagrupar en Excel las líneas de un tiquete.
+          m.saleId ?? m.id,
+          saleValue(m),
+          // En pantalla el costo se oculta, pero el export de la dueña sí lo
+          // necesita: es con lo que concilia las entradas contra las facturas
+          // del proveedor. `total` es el valor al costo en entradas y traslados.
+          seeCosts ? m.total : '',
+          seeCosts ? m.margin : '',
+        ]
+      })
       downloadCsv('historial-movimientos.csv', toCsv(headers, data))
     } finally {
       setExporting(false)
@@ -189,7 +205,7 @@ export function HistoryScreen() {
           overflowX: 'auto',
         }}
       >
-        <div style={{ minWidth: 860 }}>
+        <div style={{ minWidth: 900 }}>
           <div
             style={{
               display: 'grid',
@@ -209,7 +225,7 @@ export function HistoryScreen() {
             <span>Cant.</span>
             <span>Local</span>
             <span>Usuario</span>
-            <span style={{ textAlign: 'right' }}>Total</span>
+            <span style={{ textAlign: 'right' }}>Valor venta</span>
             {seeCosts ? <span style={{ textAlign: 'right' }}>Utilidad</span> : null}
           </div>
 
@@ -218,7 +234,9 @@ export function HistoryScreen() {
           ) : rows.length === 0 ? (
             <Empty text="No hay movimientos que coincidan." />
           ) : (
-            rows.map((m) => <HistoryRow key={m.id} movement={m} admin={seeCosts} />)
+            rows.map((m) => (
+              <HistoryRow key={m.id} movement={m} admin={seeCosts} place={movementPlace(m, stores, bodegas)} />
+            ))
           )}
         </div>
       </div>
@@ -246,8 +264,19 @@ export function HistoryScreen() {
   )
 }
 
-function HistoryRow({ movement: m, admin }: { movement: Movement; admin: boolean }) {
+function HistoryRow({
+  movement: m,
+  admin,
+  place,
+}: {
+  movement: Movement
+  admin: boolean
+  place: MovementPlace
+}) {
   const qtyColor = m.type === 'sale' ? 'var(--color-danger)' : 'var(--color-success)'
+  const status = saleStatusOf(m)
+  // En una salida el par VA hacia la persona; en un retorno VIENE de ella.
+  const personPrefix = m.type === 'retorno' ? '←' : '→'
   return (
     <div
       className="iw-row"
@@ -304,12 +333,38 @@ function HistoryRow({ movement: m, admin }: { movement: Movement; admin: boolean
             {[m.customerName, m.payment, m.bajaReason, m.returnReason].filter(Boolean).join(' · ')}
           </span>
         ) : null}
+        {m.type === 'sale' && status !== 'cobrado' ? (
+          <span style={{ display: 'block', marginTop: 3 }}>
+            <SaleStatusChip status={status} size="sm" />
+          </span>
+        ) : null}
       </span>
       <span>{m.snapshot.size}</span>
       <span style={{ fontWeight: 700, color: qtyColor }}>{signedQuantity(m)}</span>
-      <span style={{ color: 'var(--text-muted)' }}>{m.storeId}</span>
-      <span style={{ color: 'var(--text-muted)', fontSize: 12, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.userName}</span>
-      <span style={{ textAlign: 'right', fontWeight: 700 }}>{formatMoney(m.total)}</span>
+      <span style={{ color: 'var(--text-muted)', minWidth: 0 }}>
+        <span style={{ display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          {place.store || '—'}
+        </span>
+        {place.bodega ? (
+          <span style={{ display: 'block', fontSize: 10.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={place.bodega}>
+            {place.bodega}
+          </span>
+        ) : null}
+      </span>
+      <span style={{ color: 'var(--text-muted)', fontSize: 12, minWidth: 0 }}>
+        <span style={{ display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={m.userName}>
+          {m.userName}
+        </span>
+        {place.person ? (
+          <span
+            style={{ display: 'block', fontSize: 11, color: 'var(--iw-plum)', fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+            title={`${personPrefix} ${place.person}`}
+          >
+            {personPrefix} {place.person}
+          </span>
+        ) : null}
+      </span>
+      <span style={{ textAlign: 'right', fontWeight: 700 }}>{formatMoney(saleValue(m))}</span>
       {admin ? (
         <span style={{ textAlign: 'right', color: m.margin >= 0 ? 'var(--color-success)' : 'var(--color-danger)', fontWeight: 700 }}>
           {formatMoney(m.margin)}
@@ -321,8 +376,8 @@ function HistoryRow({ movement: m, admin }: { movement: Movement; admin: boolean
 
 const gridCols = (admin: boolean) =>
   admin
-    ? '92px 80px minmax(150px,1.6fr) 46px 50px 56px 96px 88px 92px'
-    : '92px 80px minmax(150px,1.6fr) 46px 50px 56px 96px 88px'
+    ? '92px 80px minmax(150px,1.6fr) 46px 50px 74px 120px 100px 92px'
+    : '92px 80px minmax(150px,1.6fr) 46px 50px 74px 120px 100px'
 
 function Empty({ text }: { text: string }) {
   return <div style={{ padding: 28, textAlign: 'center', color: 'var(--text-muted)', fontSize: 14 }}>{text}</div>

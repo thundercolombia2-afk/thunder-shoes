@@ -10,7 +10,7 @@
 import { useEffect, useState } from 'react'
 import { Navigate } from 'react-router-dom'
 import { useSession } from '@/app/session'
-import { useStores } from '@/app/hooks'
+import { useBodegas, useStores } from '@/app/hooks'
 import { teamRepository } from '@/data/repositories/teamRepository'
 import { bodegaRepository } from '@/data/repositories/bodegaRepository'
 import { configRepository } from '@/data/repositories/configRepository'
@@ -46,14 +46,13 @@ export function SettingsScreen() {
   const [tab, setTab] = useState<Tab>('claves')
   const [invites, setInvites] = useState<Invite[]>([])
   const [team, setTeam] = useState<UserProfile[]>([])
-  const [bodegas, setBodegas] = useState<Bodega[]>([])
+  const bodegas = useBodegas()
 
   const reloadTeam = () => {
     teamRepository.listInvites().then(setInvites).catch(() => undefined)
     teamRepository.listTeam().then(setTeam).catch(() => undefined)
   }
   useEffect(reloadTeam, [])
-  useEffect(() => bodegaRepository.subscribe(setBodegas), [])
 
   // Configuración es SOLO de la dueña.
   if (!user || !user.owner) return <Navigate to="/scan" replace />

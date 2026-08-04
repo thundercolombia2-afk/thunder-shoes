@@ -9,3 +9,4 @@ firestore-debug.log
 ui-debug.log
 service-account.json
 .DS_Store
+tsconfig.tsbuildinfo

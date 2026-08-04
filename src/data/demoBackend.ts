@@ -22,6 +22,7 @@ import {
   type Product,
   type ProductId,
   type SaleMeta,
+  type SaleStatus,
   type Size,
   type Store,
   type StoreId,
@@ -35,6 +36,7 @@ import {
   assertMovementIsValid,
   buildBarcode,
   calculateMovement,
+  defaultSaleStatus,
   locationDeltas,
   normalizeBarcode,
 } from '@/domain/rules'
@@ -173,6 +175,7 @@ function applyToStats(m: Movement) {
     s.purchasesCount += 1
   } else if (m.type === 'return') {
     s.returnsTotal = money(s.returnsTotal + m.total)
+    s.salesTotal = money(s.salesTotal - m.total)
     s.unitsSold -= m.quantity
     s.salesByStore[m.storeId] = (s.salesByStore[m.storeId] ?? 0) - m.total
     s.unitsByProduct[m.productId] = (s.unitsByProduct[m.productId] ?? 0) - m.quantity
@@ -189,6 +192,8 @@ const DEMO_CUSTOMERS: [string, string, string][] = [
   ['Carlos Mejía', '3205551122', 'Transferencia'],
   ['Sofía Lozano', '3014447788', 'Daviplata'],
   ['Diego Pardo', '3123334455', 'Tarjeta'],
+  // Uno por transportadora, para ver el flujo de cobrar / pendiente en la demo.
+  ['Marcela Ruiz', '3187776655', 'Interrapidísimo'],
 ]
 const days7 = recentDayKeys(7)
 for (let k = 0; k < 22; k++) {
@@ -234,6 +239,8 @@ for (let k = 0; k < 22; k++) {
     m.customerName = customerName
     m.customerPhone = customerPhone
     m.payment = payment
+    const status = defaultSaleStatus(payment)
+    if (status !== 'cobrado') m.saleStatus = status
   }
   movements.push(m)
   applyToStats(m)
@@ -471,7 +478,16 @@ export const demoBackend = {
       if (draft.bajaReason) movement.bajaReason = draft.bajaReason
       if (eff.fromLocation) movement.fromLocation = eff.fromLocation
       if (eff.toLocation) movement.toLocation = eff.toLocation
-      if (drafts.length > 1) movement.saleId = saleId
+      if (draft.targetUserId) movement.targetUserId = draft.targetUserId
+      if (draft.targetUserName) movement.targetUserName = draft.targetUserName
+      if (draft.type === 'sale') {
+        const status = defaultSaleStatus(meta?.payment)
+        if (status !== 'cobrado') movement.saleStatus = status
+      }
+      // Igual que el backend real: SIEMPRE lleva `saleId`, y respeta el que
+      // venga en `meta` (una devolución cuelga de su venta original). Sin esto
+      // la demo no podía reconstruir tiquetes ni frenar una doble devolución.
+      movement.saleId = meta?.saleId ?? saleId
       if (meta?.payment) movement.payment = meta.payment
       if (meta?.customerName) movement.customerName = meta.customerName
       if (meta?.customerPhone) movement.customerPhone = meta.customerPhone
@@ -483,6 +499,20 @@ export const demoBackend = {
 
     notify()
     return Promise.resolve(created)
+  },
+
+  setSaleStatus(
+    movementId: string,
+    status: SaleStatus,
+    actor: { userId: string; userName: string },
+  ): Promise<void> {
+    const m = movements.find((x) => x.id === movementId)
+    if (!m) return Promise.reject(new DomainError('BARCODE_NOT_FOUND', 'Movimiento no encontrado'))
+    m.saleStatus = status
+    m.saleStatusAt = new Date()
+    m.saleStatusBy = actor.userName
+    m.saleStatusByUid = actor.userId as UserId
+    return Promise.resolve()
   },
 
   listPage(options: { type?: MovementType } = {}): Promise<{

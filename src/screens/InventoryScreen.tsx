@@ -6,13 +6,12 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useCatalog, useStores } from '@/app/hooks'
+import { useBodegas, useCatalog, useStores } from '@/app/hooks'
 import { useSession } from '@/app/session'
 import {
   money,
   BAJA_REASONS,
   type BajaReason,
-  type Bodega,
   type MovementDraft,
   type ProductId,
   type Size,
@@ -20,7 +19,6 @@ import {
 } from '@/domain/models'
 import { productStatus, variantStatus, errorMessage } from '@/domain/rules'
 import { parseLocationKey, stockAt, storeKey } from '@/domain/locations'
-import { bodegaRepository } from '@/data/repositories/bodegaRepository'
 import { catalogRepository } from '@/data/repositories/catalogRepository'
 import { movementRepository, type MovementActor } from '@/data/repositories/movementRepository'
 import { configRepository } from '@/data/repositories/configRepository'
@@ -38,8 +36,7 @@ export function InventoryScreen() {
   const canBaja = user?.owner === true // dar de baja: solo la dueña
   const navigate = useNavigate()
   const [search, setSearch] = useState('')
-  const [bodegas, setBodegas] = useState<Bodega[]>([])
-  useEffect(() => bodegaRepository.subscribe(setBodegas), [])
+  const bodegas = useBodegas()
 
   // Referencia abierta en el modal de detalle (por id). null = ninguna.
   const [openId, setOpenId] = useState<string | null>(null)

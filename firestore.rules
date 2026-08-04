@@ -196,10 +196,30 @@ service cloud.firestore {
       allow create: if hasProfile()
         && request.resource.data.userId == uid()
         && isValidMovement(request.resource.data);
-      // El libro mayor no se EDITA nunca. Borrarlo solo lo puede hacer la DUEÑA
-      // (vaciar historial para empezar limpio); ningún empleado ni socio normal.
-      allow update: if false;
+      // El libro mayor no se EDITA: los importes, cantidades, ubicaciones y
+      // firmas de un asiento son intocables. La ÚNICA excepción es el estado de
+      // cobro de una venta (cobrado / pendiente / devuelto), porque la plata de
+      // una venta por transportadora entra días después. La regla permite el
+      // cambio solo si NO se tocó ningún otro campo.
+      allow update: if hasProfile() && onlySaleStatusChanged();
+      // Borrarlo solo lo puede hacer la DUEÑA (vaciar historial para empezar
+      // limpio); ningún empleado ni socio normal.
       allow delete: if isOwner();
+    }
+
+    // El cambio de estado se acota por todos lados: solo sobre una VENTA, solo
+    // esos tres campos, solo a un estado válido, el estado tiene que cambiar de
+    // verdad (si no, se podría reescribir la firma de un cambio ajeno) y la
+    // firma queda atada al uid REAL y a la hora del servidor — un nombre lo
+    // escribe el cliente, el uid no.
+    function onlySaleStatusChanged() {
+      return resource.data.type == 'sale'
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['saleStatus', 'saleStatusAt', 'saleStatusBy', 'saleStatusByUid'])
+        && request.resource.data.saleStatus in ['cobrado', 'pendiente', 'devuelto']
+        && request.resource.data.saleStatus != resource.data.get('saleStatus', 'cobrado')
+        && request.resource.data.saleStatusByUid == uid()
+        && request.resource.data.saleStatusAt == request.time;
     }
 
     function isValidMovement(m) {

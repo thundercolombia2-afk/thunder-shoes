@@ -4,14 +4,12 @@
  * porque cambiarlo requiere verificación aparte).
  */
 
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Navigate } from 'react-router-dom'
 import { useSession } from '@/app/session'
-import { useStores } from '@/app/hooks'
+import { useBodegas, useStores } from '@/app/hooks'
 import { authService } from '@/data/authService'
-import { bodegaRepository } from '@/data/repositories/bodegaRepository'
 import { ROLE_LABEL } from '@/domain/users'
-import type { Bodega } from '@/domain/models'
 import { RoleBadge } from './_shared'
 import { Field } from '@/ui/Field'
 import { Button } from '@/ui/Button'
@@ -19,8 +17,7 @@ import { Button } from '@/ui/Button'
 export function ProfileScreen() {
   const { user, refreshProfile } = useSession()
   const { data: stores } = useStores()
-  const [bodegas, setBodegas] = useState<Bodega[]>([])
-  useEffect(() => bodegaRepository.subscribe(setBodegas), [])
+  const bodegas = useBodegas()
 
   const [name, setName] = useState(user?.name ?? '')
   const [savingName, setSavingName] = useState(false)

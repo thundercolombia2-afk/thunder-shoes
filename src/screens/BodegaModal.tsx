@@ -6,12 +6,14 @@
  */
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
-import { bodegaRepository } from '@/data/repositories/bodegaRepository'
+import { useBodegas } from '@/app/hooks'
 import { teamRepository } from '@/data/repositories/teamRepository'
 import { bodegaKey, storeKey } from '@/domain/locations'
 import { ROLE_LABEL, type UserProfile } from '@/domain/users'
 import type { Bodega } from '@/domain/models'
 import type { CartLine } from '@/app/cart'
+import { ErrorNote, Overlay } from './SellModals'
+import { ChipPicker } from './_shared'
 
 type Action = 'salida' | 'retorno'
 
@@ -32,9 +34,10 @@ export function BodegaModal({
   busy: boolean
   error: string
   onClose: () => void
-  onConfirm: (action: Action, bodega: Bodega, targetStoreId: string) => void
+  /** `target` es la persona que recibe (salida) o de la que vuelve (retorno). */
+  onConfirm: (action: Action, bodega: Bodega, target: UserProfile) => void
 }) {
-  const [bodegas, setBodegas] = useState<Bodega[]>([])
+  const bodegas = useBodegas()
   const [team, setTeam] = useState<UserProfile[]>([])
   const [bodegaId, setBodegaId] = useState('')
   const [action, setAction] = useState<Action>('salida')
@@ -42,7 +45,6 @@ export function BodegaModal({
   // y por id no se confunde a quién le entregas.
   const [targetUserId, setTargetUserId] = useState('')
 
-  useEffect(() => bodegaRepository.subscribe(setBodegas), [])
   useEffect(() => {
     teamRepository.listTeam().then(setTeam).catch(() => undefined)
   }, [])
@@ -72,7 +74,7 @@ export function BodegaModal({
   const ready = !!bodega && !!targetStoreId && !insufficient && lines.length > 0 && !busy
 
   const confirm = () => {
-    if (bodega && ready) onConfirm(action, bodega, targetStoreId)
+    if (bodega && target && ready) onConfirm(action, bodega, target)
   }
 
   return (
@@ -91,28 +93,13 @@ export function BodegaModal({
       ) : (
         <>
           {/* Pestañas: una por bodega autorizada */}
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 16 }}>
-            {mine.map((b) => {
-              const on = b.id === (bodega?.id ?? '')
-              return (
-                <button
-                  key={b.id}
-                  onClick={() => setBodegaId(b.id)}
-                  className="iw-press"
-                  style={{
-                    padding: '9px 15px',
-                    borderRadius: 'var(--radius-lg)',
-                    border: `1.5px solid ${on ? 'var(--iw-plum)' : 'var(--border-subtle)'}`,
-                    background: on ? 'var(--iw-plum)' : 'var(--surface-card)',
-                    color: on ? '#fff' : 'var(--text-secondary)',
-                    font: '700 13.5px var(--font-body)',
-                    cursor: 'pointer',
-                  }}
-                >
-                  {b.code}
-                </button>
-              )
-            })}
+          <div style={{ marginTop: 16 }}>
+            <ChipPicker
+              items={mine}
+              selectedId={bodega?.id ?? ''}
+              onSelect={setBodegaId}
+              label={(b) => b.code}
+            />
           </div>
 
           {/* Acción: salida | retorno */}
@@ -213,7 +200,7 @@ export function BodegaModal({
             })}
           </div>
 
-          {error ? <ErrorNote text={error} /> : null}
+          <ErrorNote text={error} />
 
           <div style={{ display: 'flex', gap: 10, marginTop: 20, justifyContent: 'flex-end' }}>
             <button
@@ -253,30 +240,6 @@ export function BodegaModal({
 
 // ── Piezas ────────────────────────────────────────────────────────────────────
 
-function Overlay({ onClose, children, width = 440 }: { onClose: () => void; children: ReactNode; width?: number }) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
-
-  return (
-    <div
-      onClick={onClose}
-      style={{ position: 'fixed', inset: 0, background: 'rgba(12,12,13,.55)', backdropFilter: 'blur(2px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60, padding: 20, overflowY: 'auto' }}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{ width, maxWidth: '100%', background: 'var(--surface-card)', borderRadius: 'var(--radius-2xl)', boxShadow: 'var(--shadow-lg)', padding: '22px 24px 24px', boxSizing: 'border-box' }}
-      >
-        {children}
-      </div>
-    </div>
-  )
-}
-
 function Note({ children }: { children: ReactNode }) {
   return (
     <div style={{ marginTop: 16, padding: '14px 16px', background: 'var(--surface-muted)', border: '1px dashed var(--border-subtle)', borderRadius: 'var(--radius-lg)', color: 'var(--text-muted)', fontSize: 13.5, lineHeight: 1.5 }}>
@@ -285,10 +248,3 @@ function Note({ children }: { children: ReactNode }) {
   )
 }
 
-function ErrorNote({ text }: { text: string }) {
-  return (
-    <div style={{ marginTop: 14, background: 'rgba(224,52,29,.1)', border: '1px solid rgba(224,52,29,.3)', borderRadius: 'var(--radius-md)', padding: '10px 14px', color: 'var(--color-danger)', fontSize: 13, fontWeight: 700 }}>
-      {text}
-    </div>
-  )
-}

@@ -11,8 +11,10 @@ import {
   orderBy,
   query,
   runTransaction,
+  serverTimestamp,
   startAfter,
   Timestamp,
+  updateDoc,
   where,
   writeBatch,
   type CollectionReference,
@@ -33,12 +35,19 @@ import {
   type MovementType,
   type ProductId,
   type SaleMeta,
+  type SaleStatus,
   type Size,
   type StoreId,
   type UserId,
 } from '@/domain/models'
-import { assertMovementIsValid, calculateMovement, DomainError, locationDeltas } from '@/domain/rules'
-import { storeKey } from '@/domain/locations'
+import {
+  assertMovementIsValid,
+  calculateMovement,
+  defaultSaleStatus,
+  DomainError,
+  locationDeltas,
+} from '@/domain/rules'
+import { bodegaKey, storeKey } from '@/domain/locations'
 import { groupSales, matchesCustomer, normalize, type Sale } from '@/domain/sales'
 import { toDayKey } from '@/lib/format'
 import { DEMO } from '@/config'
@@ -174,6 +183,15 @@ export const movementRepository = {
         if (draft.bajaReason) movement.bajaReason = draft.bajaReason
         if (eff.fromLocation) movement.fromLocation = eff.fromLocation
         if (eff.toLocation) movement.toLocation = eff.toLocation
+        // A quién se le entregó / de quién se recibió (traslados de bodega).
+        if (draft.targetUserId) movement.targetUserId = draft.targetUserId
+        if (draft.targetUserName) movement.targetUserName = draft.targetUserName
+        // Estado de cobro: solo en ventas, y solo si no es el normal (cobrado),
+        // para no engordar cada asiento del libro mayor con un valor por defecto.
+        if (draft.type === 'sale') {
+          const status = defaultSaleStatus(meta?.payment)
+          if (status !== 'cobrado') movement.saleStatus = status
+        }
         // Siempre: sin `saleId` no se puede reconstruir el tiquete ni saber
         // qué se devolvió de qué venta.
         movement.saleId = saleId
@@ -215,6 +233,102 @@ export const movementRepository = {
       })
 
       return movements
+    })
+  },
+
+  /**
+   * Devuelve a BODEGA un par vendido que el cliente no pagó (lo típico de la
+   * venta por transportadora: el paquete regresa al almacén, no al local).
+   *
+   * Es UN SOLO asiento de devolución cuyo destino es la bodega, no dos: así el
+   * stock y los contadores del día se escriben en una única transacción y no
+   * puede quedar una devolución escrita sin su traslado. La devolución se
+   * valora con el precio y el costo CONGELADOS en la venta, para revertir
+   * exactamente lo que entró aunque el precio haya cambiado desde entonces.
+   *
+   * Antes de escribir comprueba contra el libro mayor que a esa línea todavía
+   * le quede algo por devolver. Ese es el candado real contra la doble
+   * devolución: cubre tanto el reintento tras un error como el par que ya se
+   * devolvió por caja, y no depende de que el estado se haya alcanzado a
+   * marcar.
+   */
+  async returnSaleToBodega(
+    sale: Movement,
+    bodegaId: string,
+    actor: MovementActor,
+  ): Promise<Movement> {
+    if (sale.type !== 'sale') {
+      throw new DomainError('ALREADY_RETURNED', 'Ese movimiento no es una venta')
+    }
+    const saleId = sale.saleId ?? sale.id
+    const related = await this.listBySaleIds([saleId])
+    const line = groupSales(related)
+      .find((s) => s.saleId === saleId)
+      ?.lines.find((l) => String(l.variantId) === String(sale.variantId))
+    // Sin línea reconstruida no hay con qué comparar: se deja pasar solo si el
+    // estado tampoco dice que ya se devolvió.
+    const remaining = line ? line.remaining : sale.saleStatus === 'devuelto' ? 0 : sale.quantity
+    if (remaining < sale.quantity) {
+      throw new DomainError('ALREADY_RETURNED', 'Ese par ya se devolvió', { remaining })
+    }
+
+    // El asiento se firma contra el local que HIZO la venta, no contra el de
+    // quien está mirando la pantalla: si no, la plata se le restaría al local
+    // equivocado en el resumen por local del dashboard.
+    const asSaleStore: MovementActor = { ...actor, storeId: sale.storeId }
+    const [movement] = await this.recordMany(
+      [
+        {
+          type: 'return',
+          variantId: sale.variantId,
+          quantity: sale.quantity,
+          returnReason: 'Devolución de transportadora',
+          toLocation: bodegaKey(bodegaId),
+          unitPriceOverride: sale.snapshot.unitPrice,
+          unitCostOverride: sale.snapshot.unitCost,
+        },
+      ],
+      asSaleStore,
+      {
+        payment: sale.payment ?? '',
+        saleId,
+        ...(sale.customerName ? { customerName: sale.customerName } : {}),
+        ...(sale.customerPhone ? { customerPhone: sale.customerPhone } : {}),
+      },
+    )
+    if (!movement) throw new DomainError('INVALID_QUANTITY', 'No se registró la devolución')
+
+    // Marcar el estado es lo último y no es crítico: si falla, el candado de
+    // arriba impide que la devolución se repita.
+    await this.setSaleStatus(sale.id, 'devuelto', actor)
+    return movement
+  },
+
+  /**
+   * Cambia el ESTADO DE COBRO de una línea de venta (cobrado / pendiente /
+   * devuelto).
+   *
+   * Es la única excepción a la inmutabilidad del libro mayor, y a propósito la
+   * más estrecha posible: no toca importes, cantidades ni stock — solo el
+   * estado y su firma. Las reglas de Firestore verifican exactamente eso.
+   *
+   * No mueve `dailyStats`: la venta ya entró el día que se hizo. Lo pendiente
+   * se ve aparte en la vista de cada local, y si el cliente no paga, la
+   * devolución (un asiento nuevo) es la que revierte la plata.
+   */
+  async setSaleStatus(
+    movementId: string,
+    status: SaleStatus,
+    actor: Pick<MovementActor, 'userId' | 'userName'>,
+  ): Promise<void> {
+    if (DEMO) return demoBackend.setSaleStatus(movementId, status, actor)
+    await updateDoc(doc(movementsRef(), movementId), {
+      saleStatus: status,
+      // `serverTimestamp` y no la hora del equipo: la regla exige que coincida
+      // con `request.time`, y así la firma del cambio no se puede falsear.
+      saleStatusAt: serverTimestamp(),
+      saleStatusBy: actor.userName,
+      saleStatusByUid: actor.userId,
     })
   },
 
@@ -433,6 +547,12 @@ function mergeDrafts(drafts: MovementDraft[]): MovementDraft[] {
 /**
  * Deltas del agregado diario para todas las líneas de la operación.
  *
+ * OJO: aquí el local sale de `actor.storeId`, no de las ubicaciones. Quien
+ * registre un movimiento a nombre de OTRO local tiene que firmarlo con el local
+ * correcto (lo hace `returnSaleToBodega`), o el agregado por local se descuadra.
+ * La UI resuelve lo mismo con `movementLocalId`; si algún día se unifican, este
+ * es el sitio que hay que cambiar.
+ *
  * Se suman en memoria y se envían como UN `increment` por campo: dos
  * `increment()` sobre la misma clave en el mismo objeto se pisarían. Entre
  * transacciones distintas `increment` sigue siendo seguro — el servidor aplica
@@ -472,7 +592,13 @@ function buildDailyDelta(movements: Movement[], storeId: StoreId, now: Date): Do
         break
       case 'return':
         totals.returnsTotal += m.total
-        // Una devolución revierte unidades vendidas del día.
+        // Una devolución revierte la venta: unidades, plata del día y plata del
+        // local. `salesTotal` tiene que bajar igual que `salesByStore` — si no,
+        // el titular "Ventas de hoy" queda inflado mientras el desglose por
+        // local baja, y con la venta por transportadora (que se devuelve una
+        // semana después) eso pasaría todas las semanas.
+        totals.salesTotal -= m.total
+        totals.salesCount -= 1
         totals.unitsSold -= m.quantity
         totals.byStore -= m.total
         bump(m.productId, -m.quantity)

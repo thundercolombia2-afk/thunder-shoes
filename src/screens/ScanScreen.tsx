@@ -12,14 +12,13 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useSession } from '@/app/session'
 import { useCart, type CartLine } from '@/app/cart'
-import { useCatalog } from '@/app/hooks'
+import { useBodegas, useCatalog } from '@/app/hooks'
 import { useIsMobile } from '@/app/useMediaQuery'
 import { useScanWithOverlay } from '@/app/scanFlow'
 import { useBarcodeScanner, useScannerFieldSubmit } from '@/app/barcodeScanner'
 import { CameraScanner, cameraScanSupported } from '@/app/CameraScanner'
 import { catalogRepository } from '@/data/repositories/catalogRepository'
 import { movementRepository } from '@/data/repositories/movementRepository'
-import { bodegaRepository } from '@/data/repositories/bodegaRepository'
 import {
   money,
   type ReturnReason,
@@ -28,6 +27,7 @@ import {
 } from '@/domain/models'
 import type { Sale } from '@/domain/sales'
 import type { Bodega } from '@/domain/models'
+import type { UserProfile } from '@/domain/users'
 import { errorMessage, normalizeBarcode, variantStatus } from '@/domain/rules'
 import { bodegaKey, parseLocationKey, stockAt, storeKey } from '@/domain/locations'
 import { formatMoney } from '@/lib/format'
@@ -52,8 +52,7 @@ export function ScanScreen() {
   const [busy, setBusy] = useState(false)
   const [dialogError, setDialogError] = useState('')
   const [camera, setCamera] = useState(false)
-  const [bodegas, setBodegas] = useState<Bodega[]>([])
-  useEffect(() => bodegaRepository.subscribe(setBodegas), [])
+  const bodegas = useBodegas()
   const inputRef = useRef<HTMLInputElement>(null)
   const canUseCamera = useMemo(cameraScanSupported, [])
 
@@ -304,8 +303,10 @@ export function ScanScreen() {
    * Salida o retorno de bodega. Mueve el carrito escaneado entre una bodega y el
    * local de un usuario, sin cambiar el total del sistema (es un traslado).
    */
-  const registerBodega = async (action: 'salida' | 'retorno', bodega: Bodega, targetStoreId: string) => {
+  const registerBodega = async (action: 'salida' | 'retorno', bodega: Bodega, target: UserProfile) => {
     if (!actor || cart.lines.length === 0) return
+    const targetStoreId = target.storeId
+    if (!targetStoreId) return
     setBusy(true)
     setDialogError('')
     try {
@@ -317,10 +318,14 @@ export function ScanScreen() {
         quantity: l.quantity,
         fromLocation: from,
         toLocation: to,
+        // Queda registrado A QUIÉN se le entregó (o de quién volvió): el local
+        // solo no alcanza, varias personas comparten local.
+        targetUserId: target.id,
+        targetUserName: target.name,
       }))
       const recorded = await movementRepository.recordMany(drafts, actor)
       const units = recorded.reduce((sum, m) => sum + m.quantity, 0)
-      const verb = action === 'salida' ? 'Salida' : 'Retorno'
+      const verb = action === 'salida' ? `Salida a ${target.name}` : `Retorno de ${target.name}`
       setNotice(`${verb} · ${bodega.code} · ${units} ${units === 1 ? 'par' : 'pares'}`)
       cart.clear()
       setDialog('none')
@@ -639,7 +644,7 @@ export function ScanScreen() {
           busy={busy}
           error={dialogError}
           onClose={() => setDialog('none')}
-          onConfirm={(action, bodega, targetStoreId) => void registerBodega(action, bodega, targetStoreId)}
+          onConfirm={(action, bodega, target) => void registerBodega(action, bodega, target)}
         />
       ) : null}
     </div>

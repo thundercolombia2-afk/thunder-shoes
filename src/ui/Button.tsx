@@ -5,8 +5,8 @@
 
 import type { ButtonHTMLAttributes, ReactNode } from 'react'
 
-type Variant = 'primary' | 'outline' | 'ghost' | 'accent'
-type Size = 'md' | 'lg'
+type Variant = 'primary' | 'outline' | 'ghost' | 'accent' | 'success' | 'danger'
+type Size = 'sm' | 'md' | 'lg'
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: Variant
@@ -34,9 +34,14 @@ const VARIANTS: Record<Variant, React.CSSProperties> = {
   accent: { background: 'var(--iw-yellow)', color: 'var(--iw-plum)', boxShadow: 'var(--shadow-accent)' },
   outline: { background: 'transparent', color: 'var(--iw-plum)', borderColor: 'var(--border-strong)' },
   ghost: { background: 'var(--surface-sunken)', color: 'var(--text-secondary)' },
+  // Confirmar un cobro y deshacer una venta: acciones con consecuencia, que se
+  // distinguen a simple vista de las de navegación.
+  success: { background: 'var(--color-success)', color: '#fff' },
+  danger: { background: 'var(--surface-card)', color: 'var(--color-danger)', borderColor: 'rgba(224,52,29,.4)' },
 }
 
 const SIZES: Record<Size, React.CSSProperties> = {
+  sm: { padding: '7px 14px', fontSize: 12.5, borderRadius: 'var(--radius-pill)' },
   md: { padding: '11px 18px', fontSize: 14 },
   lg: { padding: '15px 22px', fontSize: 17 },
 }

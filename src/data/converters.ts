@@ -17,12 +17,14 @@ import {
   type MovementId,
   type Product,
   type ProductId,
+  type SaleStatus,
   type Size,
   type Store,
   type StoreId,
   type UserId,
   type Variant,
   type VariantId,
+  SALE_STATUSES,
   isSize,
   money,
 } from '@/domain/models'
@@ -45,6 +47,9 @@ const toDate = (value: unknown): Date => {
   if (value instanceof Date) return value
   return new Date(0)
 }
+
+const isSaleStatus = (value: unknown): value is SaleStatus =>
+  typeof value === 'string' && (SALE_STATUSES as readonly string[]).includes(value)
 
 const toSize = (value: unknown): Size => {
   const n = Number(value)
@@ -173,6 +178,12 @@ export const movementFromDoc = (snap: QueryDocumentSnapshot<DocumentData>): Move
   if (d.payment) movement.payment = String(d.payment)
   if (d.customerName) movement.customerName = String(d.customerName)
   if (d.customerPhone) movement.customerPhone = String(d.customerPhone)
+  if (d.targetUserId) movement.targetUserId = String(d.targetUserId) as UserId
+  if (d.targetUserName) movement.targetUserName = String(d.targetUserName)
+  if (isSaleStatus(d.saleStatus)) movement.saleStatus = d.saleStatus
+  if (d.saleStatusAt) movement.saleStatusAt = toDate(d.saleStatusAt)
+  if (d.saleStatusBy) movement.saleStatusBy = String(d.saleStatusBy)
+  if (d.saleStatusByUid) movement.saleStatusByUid = String(d.saleStatusByUid) as UserId
   return movement
 }
 

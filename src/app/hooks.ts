@@ -9,7 +9,8 @@ import { storeRepository } from '@/data/repositories/storeRepository'
 import { catalogRepository, type ProductWithVariants } from '@/data/repositories/catalogRepository'
 import { statsRepository } from '@/data/repositories/statsRepository'
 import { movementRepository } from '@/data/repositories/movementRepository'
-import type { DailyStats, Movement, MovementType, Store, StoreId } from '@/domain/models'
+import { bodegaRepository } from '@/data/repositories/bodegaRepository'
+import type { Bodega, DailyStats, Movement, MovementType, Store, StoreId } from '@/domain/models'
 import type { DocumentData, QueryDocumentSnapshot } from 'firebase/firestore'
 
 interface AsyncState<T> {
@@ -34,6 +35,13 @@ export function useStores(): AsyncState<Store[]> {
   }, [])
 
   return state
+}
+
+/** Bodegas en vivo. Varias pantallas necesitan traducir "b:abc" a "Bodega 1". */
+export function useBodegas(): Bodega[] {
+  const [bodegas, setBodegas] = useState<Bodega[]>([])
+  useEffect(() => bodegaRepository.subscribe(setBodegas), [])
+  return bodegas
 }
 
 /**

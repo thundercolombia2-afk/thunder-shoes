@@ -160,6 +160,7 @@ export const RETURN_REASONS = [
   'Talla incorrecta',
   'No se envió a domicilio',
   'No la recogió el cliente',
+  'Devolución de transportadora',
   'Defecto de fábrica',
   'Cambio de modelo',
   'No le gustó',
@@ -180,9 +181,27 @@ export const PAYMENT_METHODS = [
   'Daviplata',
   'Nu Bank',
   'Tarjeta',
+  'Interrapidísimo',
   'Otro',
 ] as const
 export type PaymentMethod = (typeof PAYMENT_METHODS)[number]
+
+/**
+ * Medios de pago cuya plata NO entra en el momento de la venta: el par viaja
+ * con la transportadora y el dinero llega días después (o el cliente no lo paga
+ * y el zapato vuelve). Una venta con uno de estos nace en estado `pendiente`.
+ */
+export const DEFERRED_PAYMENTS: readonly PaymentMethod[] = ['Interrapidísimo']
+
+/**
+ * Estado de cobro de una línea de venta:
+ *  · cobrado  — la plata ya entró (lo normal).
+ *  · pendiente — se despachó por transportadora; el dinero llega después.
+ *  · devuelto — el cliente no lo pagó y el par ya volvió a bodega.
+ * Una venta vieja sin el campo se lee como `cobrado`.
+ */
+export const SALE_STATUSES = ['cobrado', 'pendiente', 'devuelto'] as const
+export type SaleStatus = (typeof SALE_STATUSES)[number]
 
 /**
  * Un movimiento es un asiento INMUTABLE. Nunca se edita ni se borra:
@@ -243,6 +262,29 @@ export interface Movement {
   bajaReason?: BajaReason
 
   /**
+   * A quién se le entregó el par (salida) o de quién se recibió (retorno). El
+   * local queda en `from/toLocation`, pero varias personas comparten local: sin
+   * esto el historial no puede decir A QUIÉN se le dio el zapato.
+   */
+  targetUserId?: UserId
+  targetUserName?: string
+
+  /**
+   * Estado de cobro. Solo en ventas. Ausente = `cobrado` (las ventas de
+   * siempre). Es el ÚNICO campo del asiento que se puede cambiar después: el
+   * dinero de una venta por transportadora entra días más tarde.
+   */
+  saleStatus?: SaleStatus
+  /**
+   * Cuándo se cambió el estado por última vez y quién lo hizo. El `uid` va
+   * aparte del nombre porque es lo único que las reglas pueden verificar: el
+   * nombre es texto que manda el cliente, el uid no.
+   */
+  saleStatusAt?: Date
+  saleStatusBy?: string
+  saleStatusByUid?: UserId
+
+  /**
    * Agrupa las líneas de una misma venta. Un carrito de 3 pares genera 3
    * asientos (uno por variante, para que el stock cuadre talla por talla) que
    * comparten este id: así el historial puede reconstruir el tiquete completo.
@@ -267,6 +309,13 @@ export interface MovementDraft {
   quantity: number
   /** Solo en compras: costo unitario, editable por el usuario. */
   unitCostOverride?: Money
+  /**
+   * Precio unitario a usar en vez del precio vigente del producto. Lo necesita
+   * la DEVOLUCIÓN: debe revertir exactamente lo que entró, y si el precio del
+   * zapato subió desde la venta, el precio de hoy dejaría la caja descuadrada
+   * para siempre. Se pasa `snapshot.unitPrice` de la venta original.
+   */
+  unitPriceOverride?: Money
   returnReason?: ReturnReason
   /** Solo en bajas: motivo. */
   bajaReason?: BajaReason
@@ -274,6 +323,9 @@ export interface MovementDraft {
   fromLocation?: string
   /** Ubicación de destino (entradas, devoluciones y traslados). */
   toLocation?: string
+  /** Persona destino (salida) u origen (retorno) del traslado. */
+  targetUserId?: UserId
+  targetUserName?: string
 }
 
 /** Datos comunes a todas las líneas de una misma venta (el "tiquete"). */

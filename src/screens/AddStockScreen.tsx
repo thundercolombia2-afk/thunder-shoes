@@ -9,17 +9,15 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useCatalog } from '@/app/hooks'
+import { useBodegas, useCatalog } from '@/app/hooks'
 import { useSession } from '@/app/session'
 import { movementRepository } from '@/data/repositories/movementRepository'
-import { bodegaRepository } from '@/data/repositories/bodegaRepository'
 import { configRepository } from '@/data/repositories/configRepository'
 import { errorMessage } from '@/domain/rules'
 import { bodegaKey, stockAt } from '@/domain/locations'
 import { normalize } from '@/domain/sales'
 import { InventoryLayout } from './_shared'
 import { Icon } from '@/ui/Icon'
-import type { Bodega } from '@/domain/models'
 import type { ProductWithVariants } from '@/data/repositories/catalogRepository'
 
 interface Row {
@@ -61,10 +59,9 @@ export function AddStockScreen() {
   const [notice, setNotice] = useState('')
   const [saving, setSaving] = useState(false)
 
-  const [bodegas, setBodegas] = useState<Bodega[]>([])
+  const bodegas = useBodegas()
   const [entryPassword, setEntryPassword] = useState<string | null>(null) // null mientras carga
 
-  useEffect(() => bodegaRepository.subscribe(setBodegas), [])
   useEffect(() => {
     configRepository
       .getEntryPassword()
