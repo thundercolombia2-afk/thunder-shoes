@@ -1,7 +1,7 @@
 rules_version = '2';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Reglas de seguridad de Thunder POS.
+// Reglas de seguridad de ZEN POS.
 //
 // Modelo: cada persona inicia sesión (correo + contraseña). El ROL vive en
 // users/{uid} y lo leen las reglas — nunca se confía en lo que diga el cliente.

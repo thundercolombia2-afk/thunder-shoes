@@ -111,12 +111,12 @@ export function AuthScreen({ incompleteAccount = false, disabledAccount = false 
       <Card>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, textAlign: 'center' }}>
           <div style={{ width: 46, height: 46, borderRadius: 12, background: 'var(--iw-yellow)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <Icon name="bolt" size={26} color="var(--iw-plum)" />
+            <Icon name="logo" size={26} color="var(--iw-plum)" />
           </div>
           <h1 style={{ margin: 0, font: '700 22px var(--font-display)' }}>
             {mode === 'login' ? 'Ingresar' : 'Crear cuenta'}
           </h1>
-          <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: 13 }}>Thunder POS · Zapatillas</p>
+          <p style={{ margin: 0, color: 'var(--text-muted)', fontSize: 13 }}>ZEN POS · Zapatillas</p>
         </div>
 
         {mode === 'register' && bootstrap ? (

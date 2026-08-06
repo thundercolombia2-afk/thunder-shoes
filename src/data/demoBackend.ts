@@ -251,7 +251,7 @@ movements.reverse() // más recientes primero para el historial
 const demoUser: UserProfile = {
   id: 'demo-uid' as UserId,
   name: 'Dueña Demo',
-  email: 'demo@thunder.pos',
+  email: 'demo@zen.pos',
   role: 'socio', // cámbialo a 'empleado' o 'bodeguero' para previsualizar otras vistas
   storeId: '163' as StoreId,
   bodegaIds: [DEMO_BODEGA_ID],
@@ -261,9 +261,9 @@ const demoUser: UserProfile = {
 }
 const team: UserProfile[] = [
   demoUser,
-  { id: 'demo-u1' as UserId, name: 'María G.', email: 'maria@thunder.pos', role: 'empleado', storeId: '163' as StoreId, active: true, createdAt: now },
-  { id: 'demo-u2' as UserId, name: 'Andrés P.', email: 'andres@thunder.pos', role: 'empleado', storeId: '173' as StoreId, active: true, createdAt: now },
-  { id: 'demo-u3' as UserId, name: 'Bruno Bodega', email: 'bruno@thunder.pos', role: 'bodeguero', bodegaIds: [DEMO_BODEGA_ID], active: true, createdAt: now },
+  { id: 'demo-u1' as UserId, name: 'María G.', email: 'maria@zen.pos', role: 'empleado', storeId: '163' as StoreId, active: true, createdAt: now },
+  { id: 'demo-u2' as UserId, name: 'Andrés P.', email: 'andres@zen.pos', role: 'empleado', storeId: '173' as StoreId, active: true, createdAt: now },
+  { id: 'demo-u3' as UserId, name: 'Bruno Bodega', email: 'bruno@zen.pos', role: 'bodeguero', bodegaIds: [DEMO_BODEGA_ID], active: true, createdAt: now },
 ]
 const invites: Invite[] = []
 

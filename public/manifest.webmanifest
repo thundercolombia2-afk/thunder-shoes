@@ -1,7 +1,7 @@
 {
-  "name": "Thunder · POS Zapatillas",
-  "short_name": "Thunder",
-  "description": "Punto de venta Thunder",
+  "name": "ZEN · POS Zapatillas",
+  "short_name": "ZEN",
+  "description": "Punto de venta ZEN",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
