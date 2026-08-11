@@ -1,9 +1,16 @@
 /**
- * Locales. Una pestaña por local y, dentro, cuatro sub-pestañas:
- *   · Vendido  — las ventas que hizo ese local.
- *   · Devuelto — las devoluciones registradas en ese local.
- *   · Stock    — lo que TIENE ese local, por talla.
- *   · Entregas — lo que le llegó desde bodega (salidas), con fecha y referencia.
+ * Locales. Una pestaña por local y, dentro, cinco sub-pestañas:
+ *   · Entregas  — lo que le llegó desde bodega (salidas), con fecha y referencia.
+ *                 El ENCARGADO (targetUserId, "a quién se le entregó") puede
+ *                 Cobrarla (abre el modal y registra la venta) o marcarla
+ *                 Pendiente (sin modal: solo la pasa al tab Pendiente). Los
+ *                 demás usuarios solo ven, sin botones.
+ *   · Pendiente — dos listas: las entregas que su encargado marcó pendiente
+ *                 (ahí sí cobra, con modal) y las ventas ya registradas que
+ *                 siguen sin cobrarse (por transportadora).
+ *   · Vendido   — las ventas que hizo ese local.
+ *   · Devuelto  — las devoluciones registradas en ese local.
+ *   · Stock     — lo que TIENE ese local, por talla.
  * Es la vista de control del dueño: qué hizo y qué tiene cada local.
  */
 
@@ -20,10 +27,11 @@ import { ChipPicker, ModalHeader, movementPlace, QuantityStepper, SALE_STATUS_TO
 import { CobroModal, ErrorNote, Overlay } from './SellModals'
 import { mulMoney, type Bodega, type Money as MoneyAmount, type Movement, type SaleStatus, type Store } from '@/domain/models'
 
-type Tab = 'vendido' | 'devuelto' | 'stock' | 'entregas'
+type Tab = 'entregas' | 'pendiente' | 'vendido' | 'devuelto' | 'stock'
 // Entregas va primero: es lo primero que revisa el local al abrir la pantalla.
 const TABS: { key: Tab; label: string }[] = [
   { key: 'entregas', label: 'Entregas' },
+  { key: 'pendiente', label: 'Pendiente' },
   { key: 'vendido', label: 'Vendido' },
   { key: 'devuelto', label: 'Devuelto' },
   { key: 'stock', label: 'Stock' },
@@ -32,7 +40,7 @@ const TABS: { key: Tab; label: string }[] = [
 export function LocalesScreen() {
   const { data: stores } = useStores()
   const { data: catalog } = useCatalog()
-  const { actor } = useSession()
+  const { user, actor } = useSession()
   const bodegas = useBodegas()
   const [movs, setMovs] = useState<Movement[]>([])
   const [loading, setLoading] = useState(true)
@@ -43,6 +51,9 @@ export function LocalesScreen() {
   /** Entrega de bodega que se está cobrando (se vendió después de recibirla). */
   const [charging, setCharging] = useState<Movement | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
+
+  /** El ENCARGADO de una entrega es la única persona que puede cobrarla o marcarla pendiente. */
+  const isMine = useCallback((m: Movement) => !!user && m.targetUserId === user.id, [user])
 
   const reload = useCallback(() => {
     movementRepository
@@ -66,6 +77,25 @@ export function LocalesScreen() {
       setMovs((prev) => prev.map((x) => (x.id === m.id ? { ...x, saleStatus: status } : x)))
     } catch {
       // Si falla (permisos, conexión), la lista se recarga y muestra la verdad.
+      reload()
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  /**
+   * Marca una entrega como pendiente, sin abrir ningún diálogo ni registrar
+   * venta: solo pasa "de Entregas a Pendiente" a la vista. La venta de verdad
+   * se crea después, cuando el encargado toque "Cobrar" (ahí sí con cantidad,
+   * pago y cliente).
+   */
+  const markPending = async (m: Movement) => {
+    if (!actor) return
+    setBusyId(m.id)
+    try {
+      await movementRepository.setDeliveryPending(m.id, true, actor)
+      setMovs((prev) => prev.map((x) => (x.id === m.id ? { ...x, deliveryPending: true } : x)))
+    } catch {
       reload()
     } finally {
       setBusyId(null)
@@ -159,6 +189,11 @@ export function LocalesScreen() {
     () => (store ? movs.filter((m) => m.type === 'salida' && m.toLocation === key) : []),
     [movs, key, store],
   )
+  /** Entregas que el encargado marcó pendiente y todavía no se han cobrado del todo. */
+  const pendingDeliveries = useMemo(
+    () => deliveries.filter((m) => m.deliveryPending && pendingOf(m) > 0),
+    [deliveries, pendingOf],
+  )
 
   const stockRows = useMemo(() => {
     if (!store) return []
@@ -179,6 +214,17 @@ export function LocalesScreen() {
   const netSales = useMemo(() => sales.filter((m) => !isReturned(m)), [sales, isReturned])
   const salesTotal = useMemo(() => netSales.reduce((s, m) => s + m.total, 0), [netSales])
   const salesUnits = useMemo(() => netSales.reduce((s, m) => s + m.quantity, 0), [netSales])
+  /**
+   * Ventas YA registradas (por transportadora, escaneadas) que siguen sin
+   * cobrarse. Las entregas marcadas pendiente desde Entregas NO están acá
+   * todavía: como no generan venta hasta que se cobran, viven en
+   * `pendingDeliveries`.
+   */
+  const pendingSales = useMemo(
+    () => sales.filter((m) => !isReturned(m) && saleStatusOf(m) === 'pendiente'),
+    [sales, isReturned],
+  )
+  const pendingTotal = useMemo(() => pendingSales.reduce((s, m) => s + m.total, 0), [pendingSales])
   /** Desglose por estado de cobro: cuánto entró ya y cuánto está en la calle. */
   const byStatus = useMemo(() => {
     const acc: Record<SaleStatus, { total: number; count: number }> = {
@@ -243,7 +289,76 @@ export function LocalesScreen() {
           </div>
 
           {/* Contenido de la sub-pestaña */}
-          {tab === 'vendido' ? (
+          {tab === 'pendiente' ? (
+            <section style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div>
+                <div style={{ font: '700 13px var(--font-body)', color: 'var(--text-secondary)', marginBottom: 8 }}>
+                  Entregas por confirmar · {pendingDeliveries.length}
+                </div>
+                <Card>
+                  {loading ? (
+                    <Empty text="Cargando pendientes…" />
+                  ) : pendingDeliveries.length === 0 ? (
+                    <Empty text="No hay entregas marcadas pendiente en este local." />
+                  ) : (
+                    pendingDeliveries.map((m) => {
+                      const pending = pendingOf(m)
+                      const sold = m.quantity - pending
+                      return (
+                        <MovRow
+                          key={m.id}
+                          title={`${m.snapshot.productName} · T${m.snapshot.size}`}
+                          sub={deliverySub(m, stores, bodegas)}
+                          qty={`+${m.quantity}`}
+                          qtyColor="var(--color-success)"
+                          badge={
+                            sold > 0 ? (
+                              <span style={{ font: '700 10.5px var(--font-body)', padding: '3px 9px', borderRadius: 'var(--radius-pill)', background: SALE_STATUS_TONE.cobrado.chip, color: SALE_STATUS_TONE.cobrado.text, whiteSpace: 'nowrap' }}>
+                                vendido {sold} de {m.quantity}
+                              </span>
+                            ) : undefined
+                          }
+                          actions={
+                            actor && isMine(m) ? (
+                              <Button variant="success" size="sm" onClick={() => setCharging(m)}>
+                                Cobrar{pending < m.quantity ? ` ${pending}` : ''}
+                              </Button>
+                            ) : null
+                          }
+                        />
+                      )
+                    })
+                  )}
+                </Card>
+              </div>
+
+              <div>
+                <SummaryBar
+                  label={`${pendingSales.length} ${pendingSales.length === 1 ? 'venta' : 'ventas'} sin cobrar`}
+                  value={<Money value={pendingTotal} />}
+                />
+                <Card>
+                  {loading ? (
+                    <Empty text="Cargando pendientes…" />
+                  ) : pendingSales.length === 0 ? (
+                    <Empty text="No hay ventas pendientes por cobrar en este local." />
+                  ) : (
+                    pendingSales.map((m) => (
+                      <SaleRow
+                        key={m.id}
+                        movement={m}
+                        returned={false}
+                        busy={busyId === m.id}
+                        canAct={actor !== null}
+                        onStatus={(status) => void setStatus(m, status)}
+                        onReturnToBodega={() => setReturning(m)}
+                      />
+                    ))
+                  )}
+                </Card>
+              </div>
+            </section>
+          ) : tab === 'vendido' ? (
             <section style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               <SummaryBar label={`${netSales.length} ${netSales.length === 1 ? 'venta' : 'ventas'} · ${salesUnits} pares`} value={<Money value={salesTotal} />} />
               <StatusBreakdown byStatus={byStatus} />
@@ -338,17 +453,29 @@ export function LocalesScreen() {
                         qty={`+${m.quantity}`}
                         qtyColor="var(--color-success)"
                         badge={
-                          sold > 0 ? (
-                            <span style={{ font: '700 10.5px var(--font-body)', padding: '3px 9px', borderRadius: 'var(--radius-pill)', background: SALE_STATUS_TONE.cobrado.chip, color: SALE_STATUS_TONE.cobrado.text, whiteSpace: 'nowrap' }}>
-                              vendido {sold} de {m.quantity}
-                            </span>
-                          ) : undefined
+                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                            {sold > 0 ? (
+                              <span style={{ font: '700 10.5px var(--font-body)', padding: '3px 9px', borderRadius: 'var(--radius-pill)', background: SALE_STATUS_TONE.cobrado.chip, color: SALE_STATUS_TONE.cobrado.text, whiteSpace: 'nowrap' }}>
+                                vendido {sold} de {m.quantity}
+                              </span>
+                            ) : null}
+                            {m.deliveryPending ? (
+                              <span style={{ font: '700 10.5px var(--font-body)', padding: '3px 9px', borderRadius: 'var(--radius-pill)', background: SALE_STATUS_TONE.pendiente.chip, color: SALE_STATUS_TONE.pendiente.text, whiteSpace: 'nowrap' }}>
+                                pendiente
+                              </span>
+                            ) : null}
+                          </div>
                         }
                         actions={
-                          actor && pending > 0 ? (
-                            <Button variant="success" size="sm" onClick={() => setCharging(m)}>
-                              Cobrar{pending < m.quantity ? ` ${pending}` : ''}
-                            </Button>
+                          actor && pending > 0 && isMine(m) && !m.deliveryPending ? (
+                            <>
+                              <Button variant="success" size="sm" onClick={() => setCharging(m)}>
+                                Cobrar{pending < m.quantity ? ` ${pending}` : ''}
+                              </Button>
+                              <Button variant="accent" size="sm" disabled={busyId === m.id} onClick={() => void markPending(m)}>
+                                Pendiente{pending < m.quantity ? ` ${pending}` : ''}
+                              </Button>
+                            </>
                           ) : null
                         }
                       />
@@ -356,7 +483,9 @@ export function LocalesScreen() {
                   })
                 )}
               </Card>
-              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Muestra las entregas más recientes.</span>
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                Muestra las entregas más recientes. Solo el encargado de cada una (a quien se le entregó) puede cobrarla o marcarla pendiente.
+              </span>
             </section>
           )}
         </>
@@ -495,10 +624,10 @@ function SaleRow({
  *
  * En temporada no hay tiempo de cobrar par por par: se despacha la mercancía
  * desde bodega y más tarde, con calma, se confirma qué de lo entregado se
- * vendió. Registra una venta de verdad —descuenta el stock del local que
- * recibió y la plata entra al día— amarrada a la entrega, para que la fila
- * sepa cuánto le falta por vender. Pide los mismos datos que el cobro normal,
- * así que vender por transportadora desde aquí también nace "pendiente".
+ * vendió. Registra una venta de verdad, ya COBRADA —descuenta el stock del
+ * local que recibió y la plata entra al día— amarrada a la entrega, para que
+ * la fila sepa cuánto le falta por vender. Solo el ENCARGADO de la entrega
+ * llega hasta aquí (Entregas y Pendiente ocultan el botón a los demás).
  */
 function CobrarEntregaModal({
   delivery,
@@ -545,6 +674,7 @@ function CobrarEntregaModal({
         { ...actor, storeId: localId as MovementActor['storeId'] },
         {
           payment,
+          statusOverride: 'cobrado',
           ...(customerName ? { customerName } : {}),
           ...(customerPhone ? { customerPhone } : {}),
         },
