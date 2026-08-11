@@ -7,10 +7,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { storeRepository } from '@/data/repositories/storeRepository'
 import { catalogRepository, type ProductWithVariants } from '@/data/repositories/catalogRepository'
-import { statsRepository } from '@/data/repositories/statsRepository'
 import { movementRepository } from '@/data/repositories/movementRepository'
 import { bodegaRepository } from '@/data/repositories/bodegaRepository'
-import type { Bodega, DailyStats, Movement, MovementType, Store, StoreId } from '@/domain/models'
+import type { Bodega, Movement, MovementType, Store, StoreId } from '@/domain/models'
 import type { DocumentData, QueryDocumentSnapshot } from 'firebase/firestore'
 
 interface AsyncState<T> {
@@ -66,31 +65,6 @@ export function useCatalog(): AsyncState<ProductWithVariants[]> {
   }, [])
 
   return state
-}
-
-/** Stats de los últimos `days` días para el dashboard. */
-export function useStats(days = 7): AsyncState<DailyStats[]> & { reload: () => void } {
-  const [state, setState] = useState<AsyncState<DailyStats[]>>({
-    data: [],
-    loading: true,
-    error: null,
-  })
-  const [nonce, setNonce] = useState(0)
-
-  useEffect(() => {
-    let alive = true
-    setState((s) => ({ ...s, loading: true }))
-    statsRepository
-      .listRecentDays(days)
-      .then((data) => alive && setState({ data, loading: false, error: null }))
-      .catch((error) => alive && setState({ data: [], loading: false, error }))
-    return () => {
-      alive = false
-    }
-  }, [days, nonce])
-
-  const reload = useCallback(() => setNonce((n) => n + 1), [])
-  return { ...state, reload }
 }
 
 interface MovementsFilter {
