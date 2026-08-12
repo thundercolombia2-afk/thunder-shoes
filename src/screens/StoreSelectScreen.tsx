@@ -160,23 +160,29 @@ export function StoreSelectScreen() {
     </div>
   )
 
-  // ── Celular: una columna centrada ──────────────────────────────────────────
+  // ── Celular: ZEN fija arriba, el resto centrado en el espacio restante ──────
   if (isMobile) {
     return (
-      <div style={{ minHeight: '100%', background: 'var(--iw-plum-dark)', display: 'flex', overflowY: 'auto' }}>
+      <div style={{ minHeight: '100%', background: 'var(--iw-plum-dark)', display: 'flex', flexDirection: 'column', overflowY: 'auto' }}>
         <div
           className="iw-fade"
-          style={{ maxWidth: 760, width: '100%', margin: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 28, padding: '40px 20px' }}
+          style={{ maxWidth: 760, width: '100%', margin: '0 auto', flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '40px 20px' }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', maxWidth: 560 }}>
-            <Icon name="logo" size={26} color="var(--iw-yellow)" />
-            <span style={{ font: '700 22px var(--font-display)', letterSpacing: '.14em', color: '#fff' }}>ZEN</span>
-            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--iw-cream)', opacity: 0.5 }}>· POS Zapatillas</span>
-            {logoutButton ? <div style={{ marginLeft: 'auto' }}>{logoutButton}</div> : null}
+          <div style={{ position: 'relative', width: '100%', maxWidth: 560, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+            {logoutButton ? <div style={{ position: 'absolute', top: 0, right: 0 }}>{logoutButton}</div> : null}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <Icon name="logo" size={26} color="var(--iw-yellow)" />
+              <span style={{ font: '700 22px var(--font-display)', letterSpacing: '.14em', color: '#fff' }}>ZEN</span>
+            </div>
+            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--iw-cream)', opacity: 0.5 }}>POS Zapatillas</span>
           </div>
-          {greeting}
-          {storesBlock}
-          {bodegaNote}
+
+          {/* Nombre y botón del local: centrados en TODO el espacio que queda, no solo horizontal. */}
+          <div style={{ flex: 1, width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 28 }}>
+            {greeting}
+            {storesBlock}
+            {bodegaNote}
+          </div>
         </div>
       </div>
     )
