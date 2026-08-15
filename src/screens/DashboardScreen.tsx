@@ -24,6 +24,10 @@ export function DashboardScreen() {
   const { data: stores } = useStores()
   const { user, can } = useSession()
   const adminUnlocked = can('seeCosts')
+  // Los egresos son un libro que solo administra la dueña/socio (así lo exige
+  // Firestore también): `seeCosts` de más arriba incluye al bodeguero, que no
+  // debe poder crear/editar/eliminar egresos.
+  const canManageExpenses = user?.role === 'socio'
 
   // Ingresos (ventas) y egresos (gastos a mano) para las tablas.
   const [movs, setMovs] = useState<Movement[]>([])
@@ -132,7 +136,7 @@ export function DashboardScreen() {
       ) : (
         <ExpenseTab
           expenses={expenses}
-          canAdd={adminUnlocked}
+          canAdd={canManageExpenses}
           actor={user ? { userId: user.id, userName: user.name } : null}
         />
       )}
@@ -428,8 +432,8 @@ function ExpenseFormModal({
   const label: React.CSSProperties = { display: 'block', font: '700 12.5px var(--font-body)', color: 'var(--text-secondary)', marginBottom: 5 }
 
   return (
-    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(12,12,13,.55)', backdropFilter: 'blur(2px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60, padding: 20, overflowY: 'auto' }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ width: 440, maxWidth: '100%', background: 'var(--surface-card)', borderRadius: 'var(--radius-2xl)', boxShadow: 'var(--shadow-lg)', padding: '22px 24px 24px', boxSizing: 'border-box' }}>
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(12,12,13,.55)', backdropFilter: 'blur(2px)', display: 'flex', justifyContent: 'center', zIndex: 60, padding: 20, overflowY: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: 440, maxWidth: '100%', margin: 'auto', maxHeight: '100%', overflowY: 'auto', background: 'var(--surface-card)', borderRadius: 'var(--radius-2xl)', boxShadow: 'var(--shadow-lg)', padding: '22px 24px 24px', boxSizing: 'border-box' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
           <h2 style={{ margin: 0, font: '700 20px var(--font-display)' }}>{initial ? 'Editar egreso' : 'Nuevo egreso'}</h2>
           <button onClick={onClose} aria-label="Cerrar" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 22, lineHeight: 1 }}>✕</button>
