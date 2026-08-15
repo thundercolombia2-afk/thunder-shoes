@@ -33,4 +33,23 @@ export const statsRepository = {
     const [today] = await this.listRecentDays(1)
     return today ?? emptyDailyStats(toDayKey(new Date()))
   },
+
+  /**
+   * Stats de un rango arbitrario (Desde/Hasta de Ingresos y egresos). A
+   * diferencia de `listRecentDays`, no tiene tope de 30 días: es una consulta
+   * por rango sobre el id del documento (el `dayKey`), no un `in` con la
+   * lista completa. Solo trae los días con datos; los que faltan simplemente
+   * no aportan al agregarlos, así que no hace falta rellenarlos.
+   */
+  async listRange(fromDayKey: string, toDayKey_: string): Promise<DailyStats[]> {
+    if (DEMO) return demoBackend.listStatsRange(fromDayKey, toDayKey_)
+    const snap = await getDocs(
+      query(
+        collection(db, COLLECTIONS.dailyStats),
+        where(documentId(), '>=', fromDayKey),
+        where(documentId(), '<=', toDayKey_),
+      ),
+    )
+    return snap.docs.map(dailyStatsFromDoc)
+  },
 }

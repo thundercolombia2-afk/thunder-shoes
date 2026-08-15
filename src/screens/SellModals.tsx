@@ -43,7 +43,6 @@ export function Overlay({ onClose, children, width = 440 }: { onClose: () => voi
         background: 'rgba(12,12,13,.55)',
         backdropFilter: 'blur(2px)',
         display: 'flex',
-        alignItems: 'center',
         justifyContent: 'center',
         zIndex: 60,
         padding: 20,
@@ -55,6 +54,12 @@ export function Overlay({ onClose, children, width = 440 }: { onClose: () => voi
         style={{
           width,
           maxWidth: '100%',
+          // `margin: auto` centra igual que `align-items: center`, pero cuando
+          // el contenido es más alto que la pantalla deja hacer scroll hasta
+          // arriba: con align-items el navegador recorta la parte de arriba.
+          margin: 'auto',
+          maxHeight: '100%',
+          overflowY: 'auto',
           background: 'var(--surface-card)',
           borderRadius: 'var(--radius-2xl)',
           boxShadow: 'var(--shadow-lg)',

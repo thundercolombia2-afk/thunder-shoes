@@ -10,7 +10,7 @@
 import { useEffect } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useSession } from '@/app/session'
-import { useStores } from '@/app/hooks'
+import { useBodegas, useStores } from '@/app/hooks'
 import { useIsMobile } from '@/app/useMediaQuery'
 import { authService } from '@/data/authService'
 import { Icon } from '@/ui/Icon'
@@ -24,30 +24,31 @@ const CARD_THEMES = [
 
 export function StoreSelectScreen() {
   const { data: stores, loading, error } = useStores()
+  const bodegas = useBodegas()
   const { selectStore, user, logout, refreshProfile } = useSession()
   const navigate = useNavigate()
   const [params] = useSearchParams()
   const wantsChange = params.has('cambiar')
   const isMobile = useIsMobile()
 
-  // El bodeguero no opera en un local: entra directo. Y quien ya está amarrado a
-  // un local se salta la selección — salvo que venga a CAMBIAR de local
-  // (?cambiar=1), en cuyo caso mostramos el selector.
+  // El bodeguero no opera en un local: entra directo. Los demás roles ven
+  // esta pantalla siempre (con su local ya identificado) antes de escanear.
   useEffect(() => {
     if (!user) return
     if (user.role === 'bodeguero') {
       navigate('/scan')
-      return
     }
-    if (wantsChange) return
-    if (user.storeId && stores.length) {
-      const mine = stores.find((s) => s.id === user.storeId)
-      if (mine) {
-        selectStore(mine)
-        navigate('/scan')
-      }
-    }
-  }, [user, stores, selectStore, navigate, wantsChange])
+  }, [user, navigate])
+
+  // Con local ya asignado y sin pedir cambio, solo mostramos SU local (no la
+  // grilla completa); la dueña sigue viendo todos los locales al cambiar
+  // (?cambiar=1) o si aún no tiene uno fijado.
+  const myStore = user?.storeId ? stores.find((s) => s.id === user.storeId) : undefined
+  const storesToShow = wantsChange || !myStore ? stores : [myStore]
+
+  // Con el cambio reciente, cualquier socio opera todas las bodegas activas
+  // (stock compartido); se lo mostramos como texto, no como acción.
+  const myBodegas = user?.role === 'socio' ? bodegas.filter((b) => b.active) : []
 
   const enter = async (store: Store) => {
     // Solo la dueña fija/cambia su local aquí (los demás lo heredan de su clave
@@ -87,8 +88,8 @@ export function StoreSelectScreen() {
         width: '100%',
       }}
     >
-      {stores.map((store, i) => {
-        const theme = CARD_THEMES[i % CARD_THEMES.length]!
+      {storesToShow.map((store) => {
+        const theme = CARD_THEMES[stores.findIndex((s) => s.id === store.id) % CARD_THEMES.length]!
         return (
           <button
             key={store.id}
@@ -153,27 +154,35 @@ export function StoreSelectScreen() {
   const bodegaNote = (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--iw-cream)', opacity: 0.5, fontSize: 12 }}>
       <Icon name="lock" size={14} />
-      Bodega central única · stock compartido entre los locales
+      {myBodegas.length > 0
+        ? `${myBodegas.length > 1 ? 'Bodegas' : 'Bodega'}: ${myBodegas.map((b) => b.code).join(' · ')} · stock compartido entre los locales`
+        : 'Bodega central única · stock compartido entre los locales'}
     </div>
   )
 
-  // ── Celular: una columna centrada ──────────────────────────────────────────
+  // ── Celular: ZEN fija arriba, el resto centrado en el espacio restante ──────
   if (isMobile) {
     return (
-      <div style={{ minHeight: '100%', background: 'var(--iw-plum-dark)', display: 'flex', overflowY: 'auto' }}>
+      <div style={{ minHeight: '100%', background: 'var(--iw-plum-dark)', display: 'flex', flexDirection: 'column', overflowY: 'auto' }}>
         <div
           className="iw-fade"
-          style={{ maxWidth: 760, width: '100%', margin: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 28, padding: '40px 20px' }}
+          style={{ maxWidth: 760, width: '100%', margin: '0 auto', flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '40px 20px' }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', maxWidth: 560 }}>
-            <Icon name="bolt" size={26} color="var(--iw-yellow)" />
-            <span style={{ font: '700 22px var(--font-display)', letterSpacing: '.14em', color: '#fff' }}>THUNDER</span>
-            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--iw-cream)', opacity: 0.5 }}>· POS Zapatillas</span>
-            {logoutButton ? <div style={{ marginLeft: 'auto' }}>{logoutButton}</div> : null}
+          <div style={{ position: 'relative', width: '100%', maxWidth: 560, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+            {logoutButton ? <div style={{ position: 'absolute', top: 0, right: 0 }}>{logoutButton}</div> : null}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <Icon name="logo" size={26} color="var(--iw-yellow)" />
+              <span style={{ font: '700 22px var(--font-display)', letterSpacing: '.14em', color: '#fff' }}>ZEN</span>
+            </div>
+            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--iw-cream)', opacity: 0.5 }}>POS Zapatillas</span>
           </div>
-          {greeting}
-          {storesBlock}
-          {bodegaNote}
+
+          {/* Nombre y botón del local: centrados en TODO el espacio que queda, no solo horizontal. */}
+          <div style={{ flex: 1, width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 28 }}>
+            {greeting}
+            {storesBlock}
+            {bodegaNote}
+          </div>
         </div>
       </div>
     )
@@ -198,10 +207,10 @@ export function StoreSelectScreen() {
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, position: 'relative', zIndex: 1 }}>
           <div style={{ width: 44, height: 44, borderRadius: 13, background: 'var(--iw-yellow)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <Icon name="bolt" size={26} color="var(--iw-plum)" />
+            <Icon name="logo" size={26} color="var(--iw-plum)" />
           </div>
           <div>
-            <div style={{ font: '700 22px var(--font-display)', letterSpacing: '.14em', color: '#fff' }}>THUNDER</div>
+            <div style={{ font: '700 22px var(--font-display)', letterSpacing: '.14em', color: '#fff' }}>ZEN</div>
             <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--iw-cream)', opacity: 0.55 }}>POS Zapatillas</div>
           </div>
         </div>
@@ -219,7 +228,7 @@ export function StoreSelectScreen() {
 
         {/* Rayo de marca al fondo, decorativo. */}
         <div style={{ position: 'absolute', right: -60, bottom: -50, opacity: 0.06, pointerEvents: 'none' }}>
-          <Icon name="bolt" size={360} color="var(--iw-yellow)" />
+          <Icon name="logo" size={360} color="var(--iw-yellow)" />
         </div>
       </aside>
 
