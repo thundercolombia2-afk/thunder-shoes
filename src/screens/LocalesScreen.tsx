@@ -162,14 +162,49 @@ export function LocalesScreen() {
     }
     return acc
   }, [movs])
+  /**
+   * Cuántos pares de cada entrega ya volvieron a bodega por un retorno del
+   * escáner (Bodega → Retorno). Ese retorno es genérico —no sabe de qué
+   * entrega salió el par, solo de qué referencia y de qué encargado—, así que
+   * se reparte contra sus entregas de más antigua a más nueva (FIFO): la
+   * mercancía que se devuelve es, en la práctica, la que más tiempo lleva ahí.
+   */
+  const returnedByDelivery = useMemo(() => {
+    const acc = new Map<string, number>()
+    const pool = new Map<string, number>()
+    for (const m of movs) {
+      if (m.type !== 'retorno' || !m.targetUserId) continue
+      const key = `${String(m.variantId)}|${m.targetUserId}`
+      pool.set(key, (pool.get(key) ?? 0) + m.quantity)
+    }
+    // `movs` viene de más reciente a más antigua; se recorre al revés para
+    // consumir el pool empezando por la entrega más vieja.
+    const deliveriesChrono = movs.filter((m) => m.type === 'salida').slice().reverse()
+    for (const d of deliveriesChrono) {
+      if (!d.targetUserId) continue
+      const key = `${String(d.variantId)}|${d.targetUserId}`
+      const available = pool.get(key) ?? 0
+      if (available <= 0) continue
+      const take = Math.min(d.quantity, available)
+      acc.set(d.id, take)
+      pool.set(key, available - take)
+    }
+    return acc
+  }, [movs])
+  /** Lo que le queda a la entrega después de descontar lo ya retornado a bodega. */
+  const effectiveQtyOf = useCallback(
+    (m: Movement) => m.quantity - Math.min(m.quantity, Math.max(0, returnedByDelivery.get(m.id) ?? 0)),
+    [returnedByDelivery],
+  )
   const pendingOf = useCallback(
     (m: Movement) => {
-      // Lo vendido se acota al tamaño de la entrega: una devolución no puede
-      // dejar "por cobrar" más pares de los que se entregaron.
-      const sold = Math.min(m.quantity, Math.max(0, soldByDelivery.get(m.id) ?? 0))
-      return m.quantity - sold
+      // Lo vendido se acota al tamaño de la entrega YA NETA de retornos: una
+      // devolución no puede dejar "por cobrar" más pares de los que quedan.
+      const effective = effectiveQtyOf(m)
+      const sold = Math.min(effective, Math.max(0, soldByDelivery.get(m.id) ?? 0))
+      return effective - sold
     },
-    [soldByDelivery],
+    [soldByDelivery, effectiveQtyOf],
   )
 
   /**
@@ -203,8 +238,15 @@ export function LocalesScreen() {
     () => deliveries.filter((m) => m.deliveryPending && pendingOf(m) > 0),
     [deliveries, pendingOf],
   )
-  /** Entregas del tab "Entregas": una vez marcada pendiente, se muda al tab Pendiente. */
-  const activeDeliveries = useMemo(() => deliveries.filter((m) => !m.deliveryPending), [deliveries])
+  /**
+   * Entregas del tab "Entregas": una vez marcada pendiente, se muda al tab
+   * Pendiente; una vez retornada por completo a bodega, desaparece — ya no
+   * está en el local.
+   */
+  const activeDeliveries = useMemo(
+    () => deliveries.filter((m) => !m.deliveryPending && effectiveQtyOf(m) > 0),
+    [deliveries, effectiveQtyOf],
+  )
 
   const stockRows = useMemo(() => {
     if (!store) return []
@@ -252,7 +294,10 @@ export function LocalesScreen() {
   }, [sales, isReturned])
   const returnsTotal = useMemo(() => returns.reduce((s, m) => s + m.total, 0), [returns])
   const returnsUnits = useMemo(() => returns.reduce((s, m) => s + m.quantity, 0), [returns])
-  const deliveriesUnits = useMemo(() => deliveries.reduce((s, m) => s + m.quantity, 0), [deliveries])
+  const deliveriesUnits = useMemo(
+    () => activeDeliveries.reduce((s, m) => s + effectiveQtyOf(m), 0),
+    [activeDeliveries, effectiveQtyOf],
+  )
   const stockUnits = useMemo(() => stockRows.reduce((s, r) => s + r.total, 0), [stockRows])
 
   return (
@@ -315,20 +360,21 @@ export function LocalesScreen() {
                     <Empty text="No hay entregas marcadas pendiente en este local." />
                   ) : (
                     pendingDeliveries.map((m) => {
+                      const effective = effectiveQtyOf(m)
                       const pending = pendingOf(m)
-                      const sold = m.quantity - pending
+                      const sold = effective - pending
                       return (
                         <MovRow
                           key={m.id}
                           title={`${m.snapshot.productName} · T${m.snapshot.size}`}
                           sub={deliverySub(m, stores, bodegas)}
-                          qty={`+${m.quantity}`}
+                          qty={`+${effective}`}
                           qtyColor="var(--color-success)"
                           onOpen={() => setDetail(m)}
                           badge={
                             sold > 0 ? (
                               <span style={{ font: '700 10.5px var(--font-body)', padding: '3px 9px', borderRadius: 'var(--radius-pill)', background: SALE_STATUS_TONE.cobrado.chip, color: SALE_STATUS_TONE.cobrado.text, whiteSpace: 'nowrap' }}>
-                                vendido {sold} de {m.quantity}
+                                vendido {sold} de {effective}
                               </span>
                             ) : undefined
                           }
@@ -470,20 +516,21 @@ export function LocalesScreen() {
                   <Empty text="Todavía no hay entregas registradas a este local." />
                 ) : (
                   activeDeliveries.map((m) => {
+                    const effective = effectiveQtyOf(m)
                     const pending = pendingOf(m)
-                    const sold = m.quantity - pending
+                    const sold = effective - pending
                     return (
                       <MovRow
                         key={m.id}
                         title={`${m.snapshot.productName} · T${m.snapshot.size}`}
                         sub={deliverySub(m, stores, bodegas)}
-                        qty={`+${m.quantity}`}
+                        qty={`+${effective}`}
                         qtyColor="var(--color-success)"
                         onOpen={() => setDetail(m)}
                         badge={
                           sold > 0 ? (
                             <span style={{ font: '700 10.5px var(--font-body)', padding: '3px 9px', borderRadius: 'var(--radius-pill)', background: SALE_STATUS_TONE.cobrado.chip, color: SALE_STATUS_TONE.cobrado.text, whiteSpace: 'nowrap' }}>
-                              vendido {sold} de {m.quantity}
+                              vendido {sold} de {effective}
                             </span>
                           ) : undefined
                         }
