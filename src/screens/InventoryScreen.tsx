@@ -18,7 +18,7 @@ import {
   type Variant,
 } from '@/domain/models'
 import { productStatus, variantStatus, errorMessage } from '@/domain/rules'
-import { parseLocationKey, stockAt, storeKey } from '@/domain/locations'
+import { bodegaKey, parseLocationKey, stockAt, storeKey } from '@/domain/locations'
 import { catalogRepository } from '@/data/repositories/catalogRepository'
 import { movementRepository, type MovementActor } from '@/data/repositories/movementRepository'
 import { configRepository } from '@/data/repositories/configRepository'
@@ -70,6 +70,15 @@ export function InventoryScreen() {
         const b = bodegas.find((x) => x.id === ref.id)
         return b ? b.code : 'Bodega'
       },
+    [stores, bodegas],
+  )
+
+  // Ubicaciones sobre las que se pueden ajustar existencias desde el detalle.
+  const locations = useMemo(
+    () => [
+      ...bodegas.map((b) => ({ key: bodegaKey(b.id), name: b.code })),
+      ...stores.map((s) => ({ key: storeKey(s.id), name: `Local ${s.code}` })),
+    ],
     [stores, bodegas],
   )
 
@@ -189,6 +198,7 @@ export function InventoryScreen() {
               canBaja={canBaja}
               actor={actor}
               locName={locName}
+              locations={locations}
               onRemoveSize={removeSize}
               onUpdate={(id, fields) => catalogRepository.updateProduct(id, fields)}
               onDelete={(id) => catalogRepository.deleteProduct(id)}
@@ -240,6 +250,7 @@ function ProductModal({
   canBaja,
   actor,
   locName,
+  locations,
   onRemoveSize,
   onUpdate,
   onDelete,
@@ -253,6 +264,8 @@ function ProductModal({
   canBaja: boolean
   actor: MovementActor | null
   locName: (key: string) => string
+  /** Bodegas y locales, para elegir sobre cuál se ajustan las existencias. */
+  locations: { key: string; name: string }[]
   onRemoveSize: (productId: ProductId, size: Size) => Promise<void>
   onUpdate: (productId: ProductId, fields: EditProductInput) => Promise<void>
   onDelete: (productId: ProductId) => Promise<void>
@@ -261,6 +274,12 @@ function ProductModal({
   const { product, variants, totalStock } = row
   const [editing, setEditing] = useState(false)
   const [editForm, setEditForm] = useState(false)
+  // Edición de cantidades por talla. El stock vive POR UBICACIÓN, así que se
+  // edita una ubicación a la vez: `editLoc` es la que se está ajustando y
+  // `sizeDraft` guarda lo tecleado (sin escribir nada hasta Guardar).
+  const [editLoc, setEditLoc] = useState('')
+  const [sizeDraft, setSizeDraft] = useState<Record<number, string>>({})
+  const [savingSizes, setSavingSizes] = useState(false)
   const [notice, setNotice] = useState('')
   // Diálogo de baja/eliminación: 'baja' = dar de baja stock; 'delete' = dar de
   // baja lo que quede y eliminar la referencia.
@@ -302,6 +321,74 @@ function ProductModal({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
+
+  // Al entrar en modo edición se propone la ubicación con más stock de esta
+  // referencia (y si no hay, la primera de la lista).
+  const startEditing = () => {
+    setNotice('')
+    const byLoc = new Map<string, number>()
+    for (const v of variants) {
+      for (const [key, q] of Object.entries(v.stockByLocation)) {
+        if (q > 0) byLoc.set(key, (byLoc.get(key) ?? 0) + q)
+      }
+    }
+    const best = [...byLoc.entries()].sort((a, b) => b[1] - a[1])[0]?.[0]
+    setEditLoc(best ?? locations[0]?.key ?? '')
+    setEditing(true)
+  }
+
+  // Al abrir la edición o cambiar de ubicación, los inputs parten del stock REAL
+  // de esa ubicación. No se re-siembra con cada refresco del catálogo: eso
+  // borraría lo que la usuaria está tecleando.
+  useEffect(() => {
+    if (!editing) return
+    setSizeDraft(
+      Object.fromEntries(variants.map((v) => [v.size, String(stockAt(v.stockByLocation, editLoc))])),
+    )
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editing, editLoc])
+
+  /** Diferencias tecleadas contra el stock actual de la ubicación en edición. */
+  const sizeDiffs = editing
+    ? variants
+        .map((v) => {
+          const here = stockAt(v.stockByLocation, editLoc)
+          return { variant: v, here, target: intOf(sizeDraft[v.size]) }
+        })
+        .filter((d) => d.target !== d.here)
+    : []
+  const addedUnits = sizeDiffs.reduce((s2, d) => s2 + Math.max(0, d.target - d.here), 0)
+  const removedUnits = sizeDiffs.reduce((s2, d) => s2 + Math.max(0, d.here - d.target), 0)
+
+  // Guardar: cada subida entra como una compra a esa ubicación y cada bajada
+  // como una baja por "Ajuste de conteo". Así el inventario y el libro mayor
+  // siguen cuadrando y el cambio queda con autor y fecha en el historial.
+  const saveSizes = async () => {
+    setNotice('')
+    if (!editLoc) return setNotice('Elige la ubicación que vas a ajustar.')
+    if (!actor) return setNotice('Selecciona un local para operar antes de ajustar existencias.')
+    if (sizeDiffs.length === 0) return setNotice('No hay cambios que guardar.')
+    const drafts: MovementDraft[] = sizeDiffs.map((d) =>
+      d.target > d.here
+        ? { type: 'purchase', variantId: d.variant.id, quantity: d.target - d.here, toLocation: editLoc }
+        : {
+            type: 'baja',
+            variantId: d.variant.id,
+            quantity: d.here - d.target,
+            fromLocation: editLoc,
+            bajaReason: 'Ajuste de conteo' as BajaReason,
+          },
+    )
+    setSavingSizes(true)
+    try {
+      await movementRepository.recordMany(drafts, actor)
+      setEditing(false)
+    } catch (e) {
+      setNotice(errorMessage(e))
+    } finally {
+      setSavingSizes(false)
+    }
+  }
 
   const remove = async (size: Size) => {
     setNotice('')
@@ -409,14 +496,27 @@ function ProductModal({
           <span style={{ font: '700 13px var(--font-body)', color: 'var(--text-secondary)', flex: 1 }}>Tallas y existencias</span>
           {admin ? (
             <button
-              onClick={() => { setNotice(''); setEditing((v) => !v) }}
+              onClick={() => { if (editing) setEditing(false); else startEditing() }}
               className="iw-press"
               style={{ cursor: 'pointer', background: editing ? 'var(--iw-plum)' : 'transparent', color: editing ? '#fff' : 'var(--text-muted)', border: `1px solid ${editing ? 'var(--iw-plum)' : 'var(--border-subtle)'}`, borderRadius: 'var(--radius-pill)', padding: '4px 11px', font: '700 11px var(--font-body)' }}
             >
-              {editing ? 'Listo' : 'Editar tallas'}
+              {editing ? 'Cancelar' : 'Editar tallas'}
             </button>
           ) : null}
         </div>
+        {editing ? (
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
+            <span style={{ font: '700 12px var(--font-body)', color: 'var(--text-secondary)', flex: 'none' }}>Ajustando en</span>
+            <select
+              value={editLoc}
+              onChange={(e) => setEditLoc(e.target.value)}
+              style={{ flex: 1, height: 36, padding: '0 10px', border: '1.5px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', font: '600 13px var(--font-body)', background: 'var(--surface-card)', color: 'var(--text-primary)', outline: 'none' }}
+            >
+              {locations.length === 0 ? <option value="">Sin ubicaciones</option> : null}
+              {locations.map((l) => <option key={l.key} value={l.key}>{l.name}</option>)}
+            </select>
+          </label>
+        ) : null}
         <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginTop: 8 }}>
           {variants.length === 0 ? (
             <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>Esta referencia no tiene tallas.</span>
@@ -426,10 +526,28 @@ function ProductModal({
               const bg = st === 'out' ? 'rgba(224,52,29,.08)' : st === 'low' ? 'rgba(199,146,0,.12)' : 'var(--iw-off-white)'
               const border = st === 'low' || st === 'out' ? 'rgba(199,146,0,.4)' : 'var(--border-subtle)'
               const removable = editing && variant.stock === 0
+              const here = stockAt(variant.stockByLocation, editLoc)
+              const typed = intOf(sizeDraft[variant.size])
+              const changed = editing && typed !== here
               return (
-                <div key={variant.size} style={{ position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 38, background: bg, border: `1px solid ${removable ? 'rgba(224,52,29,.5)' : border}`, borderRadius: 8, padding: '4px 8px' }}>
+                <div key={variant.size} style={{ position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 38, background: changed ? 'rgba(90,42,90,.08)' : bg, border: `1px solid ${removable ? 'rgba(224,52,29,.5)' : changed ? 'var(--iw-plum)' : border}`, borderRadius: 8, padding: '4px 8px' }}>
                   <span style={{ fontSize: 10.5, color: 'var(--text-muted)', fontWeight: 700 }}>{variant.size}</span>
-                  <span style={{ font: '700 14px var(--font-display)', color: cellColor(variant.stock, variant.minStock) }}>{variant.stock}</span>
+                  {editing ? (
+                    <>
+                      <input
+                        value={sizeDraft[variant.size] ?? ''}
+                        onChange={(e) => setSizeDraft((prev) => ({ ...prev, [variant.size]: e.target.value.replace(/\D/g, '') }))}
+                        inputMode="numeric"
+                        aria-label={`Existencias talla ${variant.size} en ${locName(editLoc)}`}
+                        style={{ width: 42, height: 30, textAlign: 'center', border: `1.5px solid ${changed ? 'var(--iw-plum)' : 'var(--border-subtle)'}`, borderRadius: 6, background: 'var(--surface-card)', color: 'var(--text-primary)', font: '700 14px var(--font-display)', outline: 'none', padding: 0 }}
+                      />
+                      <span style={{ fontSize: 9.5, color: changed ? 'var(--iw-plum)' : 'var(--text-muted)', fontWeight: 700, marginTop: 2 }}>
+                        {changed ? `${typed > here ? '+' : '−'}${Math.abs(typed - here)} · de ${here}` : `de ${here}`}
+                      </span>
+                    </>
+                  ) : (
+                    <span style={{ font: '700 14px var(--font-display)', color: cellColor(variant.stock, variant.minStock) }}>{variant.stock}</span>
+                  )}
                   {removable ? (
                     <button
                       onClick={() => void remove(variant.size)}
@@ -446,9 +564,34 @@ function ProductModal({
           )}
         </div>
         {editing ? (
-          <span style={{ display: 'block', marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>
-            Quita con la ✕ las tallas que no manejas. Solo las que están en cero; si una tiene stock, primero dala de baja.
-          </span>
+          <>
+            <span style={{ display: 'block', marginTop: 8, fontSize: 12, color: 'var(--text-muted)' }}>
+              Escribe las existencias reales de cada talla en {locName(editLoc)}; debajo de cada una ves cuánto hay hoy. Nada se guarda hasta que confirmes. Quita con la ✕ las tallas que no manejas (solo las que están en cero en todo el sistema).
+            </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
+              <span style={{ flex: 1, minWidth: 140, fontSize: 12, fontWeight: 700, color: sizeDiffs.length ? 'var(--iw-plum)' : 'var(--text-muted)' }}>
+                {sizeDiffs.length === 0
+                  ? 'Sin cambios pendientes'
+                  : `${sizeDiffs.length} ${sizeDiffs.length === 1 ? 'talla' : 'tallas'} · ${addedUnits ? `+${addedUnits} ` : ''}${removedUnits ? `−${removedUnits}` : ''}`.trim()}
+              </span>
+              <button
+                onClick={() => setSizeDraft(Object.fromEntries(variants.map((v) => [v.size, String(stockAt(v.stockByLocation, editLoc))])))}
+                disabled={sizeDiffs.length === 0 || savingSizes}
+                className="iw-press"
+                style={{ height: 38, padding: '0 14px', background: 'var(--surface-card)', color: 'var(--text-primary)', border: '1.5px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', font: '700 13px var(--font-body)', cursor: sizeDiffs.length === 0 || savingSizes ? 'not-allowed' : 'pointer', opacity: sizeDiffs.length === 0 ? 0.5 : 1 }}
+              >
+                Descartar
+              </button>
+              <button
+                onClick={() => void saveSizes()}
+                disabled={sizeDiffs.length === 0 || savingSizes}
+                className="iw-press"
+                style={{ height: 38, padding: '0 18px', border: 'none', borderRadius: 'var(--radius-md)', font: '700 13px var(--font-body)', background: 'var(--iw-plum)', color: '#fff', cursor: sizeDiffs.length === 0 || savingSizes ? 'not-allowed' : 'pointer', opacity: sizeDiffs.length === 0 || savingSizes ? 0.5 : 1 }}
+              >
+                {savingSizes ? 'Guardando…' : 'Guardar cantidades'}
+              </button>
+            </div>
+          </>
         ) : null}
         {canBaja && totalStock > 0 ? (
           <button
@@ -676,6 +819,11 @@ function BajaDialog({
       </div>
     </div>
   )
+}
+
+/** Entero no negativo de lo tecleado (vacío o basura = 0). */
+function intOf(raw: string | undefined): number {
+  return Math.max(0, Math.floor(Number(raw ?? '') || 0))
 }
 
 /** Limita la cantidad tecleada al stock disponible de la talla. */
