@@ -9,13 +9,14 @@ import { useNavigate } from 'react-router-dom'
 import { useSession } from '@/app/session'
 import { useCatalog } from '@/app/hooks'
 import { catalogRepository, type ProductWithVariants } from '@/data/repositories/catalogRepository'
-import { money, SIZES, type Size } from '@/domain/models'
+import { ALL_SIZES, EXTRA_SIZES, money, SIZES, type Size } from '@/domain/models'
 import { normalize } from '@/domain/sales'
 import { buildBarcode, errorMessage } from '@/domain/rules'
 import { formatMoneyInput, parseMoneyInput } from '@/lib/format'
 import { barcodeBars, barcodeSvgString } from '@/lib/barcode'
 import { useIsMobile } from '@/app/useMediaQuery'
 import { InventoryLayout } from './_shared'
+import { Overlay } from './SellModals'
 import { Field } from '@/ui/Field'
 import { Button } from '@/ui/Button'
 
@@ -32,6 +33,8 @@ export function NewReferenceScreen() {
   // elige a conciencia. Así no quedan tallas "fantasma" que nunca se surten.
   const [sizes, setSizes] = useState<Set<Size>>(() => new Set<Size>())
   const [copies, setCopies] = useState('1')
+  // Modal de tallas pequeñas (30–35), fuera de la fila de siempre.
+  const [sizePicker, setSizePicker] = useState(false)
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   // Se marca al intentar guardar/imprimir con el formulario incompleto: a partir
@@ -45,7 +48,9 @@ export function NewReferenceScreen() {
   // deja de ser "crear" y pasa a mostrar lo que ya hay (incluidos sus códigos).
   const [existing, setExisting] = useState<ProductWithVariants | null>(null)
 
-  const selectedSizes = useMemo(() => SIZES.filter((s) => sizes.has(s)), [sizes])
+  // Sobre ALL_SIZES y no SIZES: si no, una talla pequeña elegida en el modal se
+  // perdería al generar los códigos y al guardar.
+  const selectedSizes = useMemo(() => ALL_SIZES.filter((s) => sizes.has(s)), [sizes])
   const skuUpper = sku.toUpperCase().replace(/\s+/g, '')
 
   const term = normalize(name)
@@ -108,6 +113,14 @@ export function NewReferenceScreen() {
   const availableSizes = existing
     ? new Set(existing.variants.filter((v) => v.active).map((v) => v.size))
     : null
+
+  // Las tallas pequeñas solo ocupan sitio en la fila cuando están en juego: o la
+  // persona las eligió en el modal, o la referencia existente ya las maneja. Van
+  // primero porque son menores que las de adulto.
+  const visibleSizes: readonly Size[] = [
+    ...EXTRA_SIZES.filter((s) => sizes.has(s) || availableSizes?.has(s)),
+    ...SIZES,
+  ]
 
   const toggleSize = (size: Size) => {
     // Sobre una referencia existente solo se eligen tallas que ya tiene: una
@@ -379,41 +392,68 @@ export function NewReferenceScreen() {
           Tallas disponibles
         </label>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-          {SIZES.map((size) => {
-            const on = sizes.has(size)
-            const markMissing = attempted && sizesInvalid
-            const blocked = !!availableSizes && !availableSizes.has(size)
-            return (
-              <button
-                key={size}
-                onClick={() => toggleSize(size)}
-                disabled={blocked}
-                title={blocked ? 'Esta referencia no maneja esta talla.' : undefined}
-                className="iw-press"
-                style={{
-                  cursor: blocked ? 'not-allowed' : 'pointer',
-                  opacity: blocked ? 0.35 : 1,
-                  width: 52,
-                  height: 52,
-                  borderRadius: 'var(--radius-md)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  font: '700 17px var(--font-display)',
-                  background: on ? 'var(--iw-plum)' : 'var(--surface-card)',
-                  color: on ? '#fff' : 'var(--text-secondary)',
-                  border: `1.5px solid ${on ? 'var(--iw-plum)' : markMissing ? 'var(--color-danger)' : 'var(--border-subtle)'}`,
-                }}
-              >
-                {size}
-              </button>
-            )
-          })}
+          {visibleSizes.map((size) => (
+            <SizeChip
+              key={size}
+              size={size}
+              on={sizes.has(size)}
+              blocked={!!availableSizes && !availableSizes.has(size)}
+              markMissing={attempted && sizesInvalid}
+              onToggle={() => toggleSize(size)}
+            />
+          ))}
         </div>
+        {/* Sobre una referencia que ya existe no se agregan tallas: una talla
+            nueva no tiene código impreso y su etiqueta no escanearía. */}
+        {existing ? null : (
+          <button
+            onClick={() => setSizePicker(true)}
+            style={{
+              alignSelf: 'flex-start',
+              background: 'none',
+              border: 'none',
+              padding: 0,
+              cursor: 'pointer',
+              font: '700 13px var(--font-body)',
+              color: 'var(--iw-plum)',
+              textDecoration: 'underline',
+              textUnderlineOffset: 3,
+            }}
+          >
+            + Agregar más tallas
+          </button>
+        )}
         {attempted && sizesInvalid ? (
           <span style={{ fontSize: 12, color: 'var(--color-danger)', fontWeight: 700 }}>Elige al menos una talla.</span>
         ) : null}
       </div>
+
+      {sizePicker ? (
+        <Overlay onClose={() => setSizePicker(false)} width={360}>
+          <h3 style={{ margin: 0, font: '700 19px var(--font-display)', color: 'var(--text-primary)' }}>
+            Agregar más tallas
+          </h3>
+          <p style={{ margin: '8px 0 16px', fontSize: 13, color: 'var(--text-muted)' }}>
+            Tallas pequeñas, de la 30 a la 35. Elige las que maneje esta referencia; quedan marcadas
+            junto a las demás.
+          </p>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {EXTRA_SIZES.map((size) => (
+              <SizeChip
+                key={size}
+                size={size}
+                on={sizes.has(size)}
+                blocked={!!availableSizes && !availableSizes.has(size)}
+                markMissing={false}
+                onToggle={() => toggleSize(size)}
+              />
+            ))}
+          </div>
+          <Button variant="primary" fullWidth onClick={() => setSizePicker(false)} style={{ marginTop: 20 }}>
+            Listo
+          </Button>
+        </Overlay>
+      ) : null}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -500,6 +540,48 @@ export function NewReferenceScreen() {
         <b>Rollo (50×25)</b>: una etiqueta por página de 50×25 mm (para impresora térmica de rollo o PDF del tamaño del sticker).
       </span>
     </InventoryLayout>
+  )
+}
+
+/** Botón de talla. El mismo en la fila de siempre y en el modal de tallas pequeñas. */
+function SizeChip({
+  size,
+  on,
+  blocked,
+  markMissing,
+  onToggle,
+}: {
+  size: Size
+  on: boolean
+  /** La referencia existente no maneja esta talla: se ve, pero no se elige. */
+  blocked: boolean
+  /** Se intentó guardar sin ninguna talla: el borde se pinta de rojo. */
+  markMissing: boolean
+  onToggle: () => void
+}) {
+  return (
+    <button
+      onClick={onToggle}
+      disabled={blocked}
+      title={blocked ? 'Esta referencia no maneja esta talla.' : undefined}
+      className="iw-press"
+      style={{
+        cursor: blocked ? 'not-allowed' : 'pointer',
+        opacity: blocked ? 0.35 : 1,
+        width: 52,
+        height: 52,
+        borderRadius: 'var(--radius-md)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        font: '700 17px var(--font-display)',
+        background: on ? 'var(--iw-plum)' : 'var(--surface-card)',
+        color: on ? '#fff' : 'var(--text-secondary)',
+        border: `1.5px solid ${on ? 'var(--iw-plum)' : markMissing ? 'var(--color-danger)' : 'var(--border-subtle)'}`,
+      }}
+    >
+      {size}
+    </button>
   )
 }
 

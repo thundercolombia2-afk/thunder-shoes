@@ -32,7 +32,9 @@ export function InventoryScreen() {
   const { data: stores } = useStores()
   const { can, store, user, actor } = useSession()
   const seeCosts = can('seeCosts')
-  const canManage = user?.role === 'socio' // editar/eliminar referencias: solo socios
+  // Lo administrativo del detalle (costo, editar referencia, ajustar tallas) es
+  // de socios. `seeCosts` no sirve para esto: incluye al bodeguero.
+  const canManage = user?.role === 'socio'
   const canBaja = user?.owner === true // dar de baja: solo la dueña
   const navigate = useNavigate()
   const [search, setSearch] = useState('')
@@ -193,7 +195,6 @@ export function InventoryScreen() {
           return (
             <ProductModal
               row={openRow}
-              admin={seeCosts}
               canManage={canManage}
               canBaja={canBaja}
               actor={actor}
@@ -242,10 +243,9 @@ function ListRow({ row, scopeStock, onOpen }: { row: ProductWithVariants; scopeS
 }
 
 /** Modal de detalle de una referencia: tallas, ubicaciones (bodegas/locales),
- *  fechas y (para admin) edición de tallas. */
+ *  fechas y, para un socio, costo y edición de tallas. */
 function ProductModal({
   row,
-  admin,
   canManage,
   canBaja,
   actor,
@@ -257,8 +257,12 @@ function ProductModal({
   onClose,
 }: {
   row: ProductWithVariants
-  admin: boolean
-  /** Puede editar/eliminar la referencia (solo socios). */
+  /**
+   * Solo socios (la dueña es socia). Manda sobre todo lo administrativo de este
+   * modal: ver el costo, editar/eliminar la referencia y ajustar las cantidades
+   * por talla. No basta con `seeCosts`, que incluye al bodeguero: él trabaja el
+   * inventario, pero no fija precios ni cuadra existencias.
+   */
   canManage: boolean
   /** Puede dar de baja stock (solo la dueña). */
   canBaja: boolean
@@ -284,6 +288,8 @@ function ProductModal({
   // Diálogo de baja/eliminación: 'baja' = dar de baja stock; 'delete' = dar de
   // baja lo que quede y eliminar la referencia.
   const [bajaMode, setBajaMode] = useState<'none' | 'baja' | 'delete'>('none')
+  // Traslado bodega → bodega: corregir en qué bodega quedó guardada la mercancía.
+  const [moving, setMoving] = useState(false)
 
   // Campos del formulario de edición de la referencia.
   const [fName, setFName] = useState(product.name)
@@ -410,6 +416,14 @@ function ProductModal({
   }
   const locEntries = [...byLocation.entries()].filter(([, q]) => q > 0).sort((a, b) => b[1] - a[1])
 
+  // Solo bodegas: mover a un LOCAL es una salida, y esa se hace desde /scan con
+  // su encargado. Aquí se corrige entre bodegas, que no involucra a nadie.
+  // Memorizado porque el diálogo lo usa como dependencia de un efecto.
+  const bodegaOptions = useMemo(
+    () => locations.filter((l) => parseLocationKey(l.key)?.kind === 'bodega'),
+    [locations],
+  )
+
   const fmtDate = (d: Date) =>
     d.getFullYear() > 1970 ? d.toLocaleDateString('es-CO', { day: 'numeric', month: 'short', year: 'numeric' }) : '—'
 
@@ -428,7 +442,7 @@ function ProductModal({
             <div style={{ font: '700 20px var(--font-display)' }}>{product.name}</div>
             <div style={{ font: '600 12px ui-monospace,monospace', color: 'var(--text-muted)', marginTop: 3 }}>
               {product.sku} · {formatMoney(product.price)}
-              {admin ? <span style={{ color: 'var(--iw-orange)' }}> · costo {formatMoney(product.cost)}</span> : null}
+              {canManage ? <span style={{ color: 'var(--iw-orange)' }}> · costo {formatMoney(product.cost)}</span> : null}
             </div>
           </div>
           {canManage ? (
@@ -475,7 +489,19 @@ function ProductModal({
         </div>
 
         {/* Existencias por ubicación */}
-        <div style={{ marginTop: 18, font: '700 13px var(--font-body)', color: 'var(--text-secondary)' }}>Existencias por ubicación</div>
+        <div style={{ marginTop: 18, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ font: '700 13px var(--font-body)', color: 'var(--text-secondary)', flex: 1 }}>Existencias por ubicación</span>
+          {/* Con una sola bodega no hay a dónde mover. */}
+          {canManage && bodegaOptions.length > 1 ? (
+            <button
+              onClick={() => { setNotice(''); setMoving(true) }}
+              className="iw-press"
+              style={{ cursor: 'pointer', background: 'transparent', color: 'var(--text-muted)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-pill)', padding: '4px 11px', font: '700 11px var(--font-body)' }}
+            >
+              Cambiar de bodega
+            </button>
+          ) : null}
+        </div>
         {locEntries.length === 0 ? (
           <div style={{ marginTop: 8, fontSize: 13, color: 'var(--text-muted)' }}>Sin existencias en ninguna ubicación.</div>
         ) : (
@@ -494,7 +520,7 @@ function ProductModal({
         {/* Tallas */}
         <div style={{ marginTop: 18, display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ font: '700 13px var(--font-body)', color: 'var(--text-secondary)', flex: 1 }}>Tallas y existencias</span>
-          {admin ? (
+          {canManage ? (
             <button
               onClick={() => { if (editing) setEditing(false); else startEditing() }}
               className="iw-press"
@@ -656,6 +682,10 @@ function ProductModal({
           onDeleted={onClose}
           onDelete={onDelete}
         />
+      ) : null}
+
+      {moving ? (
+        <TrasladoDialog row={row} actor={actor} bodegas={bodegaOptions} onClose={() => setMoving(false)} />
       ) : null}
     </div>
   )
@@ -819,6 +849,212 @@ function BajaDialog({
       </div>
     </div>
   )
+}
+
+/**
+ * Mover existencias de una bodega a otra. Es para CORREGIR dónde está guardada
+ * la mercancía, no para despacharla: sacar a un local es una salida y esa se
+ * hace desde /scan, donde queda a nombre de un encargado.
+ *
+ * Se pide la contraseña de ingreso —la misma de Agregar stock— porque mover
+ * stock entre bodegas descuadra el conteo físico de las dos si se hace por
+ * error, y no hay forma de deshacerlo salvo con otro traslado.
+ */
+function TrasladoDialog({
+  row,
+  actor,
+  bodegas,
+  onClose,
+}: {
+  row: ProductWithVariants
+  actor: MovementActor | null
+  /** Solo bodegas, ya filtradas por el modal. */
+  bodegas: { key: string; name: string }[]
+  onClose: () => void
+}) {
+  const { product, variants } = row
+  // Origen por defecto: la bodega que más stock tiene de esta referencia; si no
+  // hay nada en ninguna, la primera. Destino: la primera que no sea el origen.
+  const [fromKey, setFromKey] = useState(() => {
+    const best = bodegas
+      .map((b) => ({ key: b.key, qty: variants.reduce((s, v) => s + stockAt(v.stockByLocation, b.key), 0) }))
+      .sort((a, b) => b.qty - a.qty)[0]
+    return best?.key ?? ''
+  })
+  const [toKey, setToKey] = useState('')
+  const [qty, setQty] = useState<Record<number, string>>({})
+  const [password, setPassword] = useState('')
+  // Solo si hay clave configurada se muestra el campo: sin ella, Configuración
+  // aún no la fijó y `verifyEntryPassword` deja pasar.
+  const [needPassword, setNeedPassword] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    configRepository
+      .getEntryPassword()
+      .then((p) => setNeedPassword(p !== ''))
+      .catch(() => setNeedPassword(false))
+  }, [])
+
+  // El destino nunca puede ser el origen: al cambiar el origen se recalcula.
+  useEffect(() => {
+    setToKey((prev) => (prev && prev !== fromKey ? prev : (bodegas.find((b) => b.key !== fromKey)?.key ?? '')))
+  }, [fromKey, bodegas])
+
+  // Tallas con stock en la bodega de origen. Se propone mover TODO, que es el
+  // caso normal de "esta referencia está en la bodega equivocada".
+  const movable = variants
+    .map((v) => ({ variant: v, here: stockAt(v.stockByLocation, fromKey) }))
+    .filter((x) => x.here > 0)
+
+  useEffect(() => {
+    setQty(Object.fromEntries(movable.map((x) => [x.variant.size, String(x.here)])))
+    // Se re-siembra solo al cambiar de bodega de origen, no con cada refresco
+    // del catálogo: eso borraría lo que la usuaria está tecleando.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fromKey])
+
+  const totalToMove = movable.reduce((s, x) => s + clampQty(qty[x.variant.size], x.here), 0)
+
+  const submit = async () => {
+    setError('')
+    if (!actor) return setError('Selecciona un local para operar antes de mover existencias.')
+    if (!fromKey || !toKey) return setError('Elige la bodega de origen y la de destino.')
+    if (fromKey === toKey) return setError('El origen y el destino no pueden ser la misma bodega.')
+    if (totalToMove <= 0) return setError('Indica cuántos pares vas a mover.')
+    setBusy(true)
+    try {
+      if (needPassword && !(await configRepository.verifyEntryPassword(password.trim()))) {
+        setError('Contraseña de ingreso incorrecta.')
+        setBusy(false)
+        return
+      }
+      const drafts: MovementDraft[] = movable
+        .map((x) => ({ x, want: clampQty(qty[x.variant.size], x.here) }))
+        .filter(({ want }) => want > 0)
+        .map(({ x, want }) => ({
+          type: 'traslado' as const,
+          variantId: x.variant.id,
+          quantity: want,
+          fromLocation: fromKey,
+          toLocation: toKey,
+        }))
+      await movementRepository.recordMany(drafts, actor)
+      onClose()
+    } catch (e) {
+      setError(errorMessage(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div
+      onClick={(e) => { e.stopPropagation(); onClose() }}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(12,12,13,.55)', backdropFilter: 'blur(2px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 70, padding: 20, overflowY: 'auto' }}
+    >
+      <div onClick={(e) => e.stopPropagation()} style={{ width: 420, maxWidth: '100%', background: 'var(--surface-card)', borderRadius: 'var(--radius-2xl)', boxShadow: 'var(--shadow-lg)', padding: '22px 24px 24px', boxSizing: 'border-box', maxHeight: '90vh', overflowY: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+          <h2 style={{ margin: 0, font: '700 20px var(--font-display)' }}>Cambiar de bodega</h2>
+          <button onClick={onClose} aria-label="Cerrar" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 22, lineHeight: 1 }}>✕</button>
+        </div>
+        <p style={{ margin: '0 0 14px', fontSize: 13, color: 'var(--text-muted)' }}>
+          {product.name} · {product.sku} — mueve existencias de una bodega a otra. El total del
+          inventario no cambia y el traslado queda en el historial.
+        </p>
+
+        <div style={{ display: 'flex', gap: 10, marginBottom: 14 }}>
+          <label style={{ flex: 1, minWidth: 0 }}>
+            <span style={{ display: 'block', font: '700 12.5px var(--font-body)', color: 'var(--text-secondary)', marginBottom: 5 }}>De</span>
+            <select
+              value={fromKey}
+              onChange={(e) => setFromKey(e.target.value)}
+              style={selectStyle}
+            >
+              {bodegas.map((b) => <option key={b.key} value={b.key}>{b.name}</option>)}
+            </select>
+          </label>
+          <label style={{ flex: 1, minWidth: 0 }}>
+            <span style={{ display: 'block', font: '700 12.5px var(--font-body)', color: 'var(--text-secondary)', marginBottom: 5 }}>A</span>
+            <select
+              value={toKey}
+              onChange={(e) => setToKey(e.target.value)}
+              style={selectStyle}
+            >
+              {bodegas.filter((b) => b.key !== fromKey).map((b) => <option key={b.key} value={b.key}>{b.name}</option>)}
+            </select>
+          </label>
+        </div>
+
+        {movable.length === 0 ? (
+          <div style={{ marginBottom: 14, fontSize: 13, color: 'var(--text-muted)' }}>
+            Esta referencia no tiene existencias en esa bodega.
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 14 }}>
+            {movable.map(({ variant, here }) => (
+              <label key={variant.size} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, minWidth: 56 }}>
+                <span style={{ fontSize: 10.5, color: 'var(--text-muted)', fontWeight: 700 }}>T{variant.size} · {here}</span>
+                <input
+                  value={qty[variant.size] ?? ''}
+                  onChange={(e) => setQty((p) => ({ ...p, [variant.size]: e.target.value.replace(/\D/g, '') }))}
+                  inputMode="numeric"
+                  aria-label={`Mover talla ${variant.size}`}
+                  style={{ width: 52, height: 36, textAlign: 'center', border: '1.5px solid var(--border-subtle)', borderRadius: 8, background: 'var(--surface-card)', color: 'var(--text-primary)', font: '700 15px var(--font-display)', outline: 'none' }}
+                />
+              </label>
+            ))}
+          </div>
+        )}
+
+        {needPassword ? (
+          <label style={{ display: 'block', marginBottom: 14 }}>
+            <span style={{ display: 'block', font: '700 12.5px var(--font-body)', color: 'var(--text-secondary)', marginBottom: 5 }}>Contraseña de ingreso</span>
+            <input
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              type="password"
+              autoComplete="off"
+              placeholder="••••"
+              style={{ width: '100%', height: 44, padding: '0 13px', border: '1.5px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', font: '700 16px var(--font-mono)', letterSpacing: '.2em', outline: 'none', background: 'var(--surface-card)', color: 'var(--text-primary)', boxSizing: 'border-box' }}
+            />
+          </label>
+        ) : null}
+
+        {error ? (
+          <div style={{ marginBottom: 12, background: 'rgba(224,52,29,.1)', border: '1px solid rgba(224,52,29,.3)', borderRadius: 'var(--radius-md)', padding: '9px 12px', color: 'var(--color-danger)', fontSize: 12.5, fontWeight: 700 }}>
+            {error}
+          </div>
+        ) : null}
+
+        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+          <button onClick={onClose} className="iw-press" style={{ height: 44, padding: '0 18px', background: 'var(--surface-card)', color: 'var(--text-primary)', border: '1.5px solid var(--border-subtle)', borderRadius: 'var(--radius-md)', font: '700 14px var(--font-body)', cursor: 'pointer' }}>Cancelar</button>
+          <button
+            onClick={() => void submit()}
+            disabled={busy || totalToMove <= 0}
+            className="iw-press"
+            style={{ height: 44, padding: '0 22px', border: 'none', borderRadius: 'var(--radius-md)', font: '700 14px var(--font-body)', background: 'var(--iw-plum)', color: '#fff', cursor: busy || totalToMove <= 0 ? 'not-allowed' : 'pointer', opacity: busy || totalToMove <= 0 ? 0.6 : 1 }}
+          >
+            {busy ? 'Moviendo…' : `Mover ${totalToMove || ''}`.trim()}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+const selectStyle: React.CSSProperties = {
+  width: '100%',
+  boxSizing: 'border-box',
+  height: 44,
+  padding: '0 12px',
+  border: '1.5px solid var(--border-subtle)',
+  borderRadius: 'var(--radius-md)',
+  font: '500 15px var(--font-body)',
+  background: 'var(--surface-card)',
+  color: 'var(--text-primary)',
+  outline: 'none',
 }
 
 /** Entero no negativo de lo tecleado (vacío o basura = 0). */
