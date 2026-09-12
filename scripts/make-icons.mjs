@@ -1,6 +1,6 @@
 /**
- * Genera los íconos de la app (PWA) a partir de un SVG del rayo de Thunder.
- * Rayo amarillo (#ffd100) sobre fondo casi-negro (#0a0a0b, el mismo del tema).
+ * Genera los íconos de la app (PWA) a partir de un SVG del logo de ZEN.
+ * Z amarilla (#ffd100) sobre fondo casi-negro (#0a0a0b, el mismo del tema).
  *
  * Correr con: node scripts/make-icons.mjs
  * Escribe en public/: icon.svg, manifest.webmanifest y public/icons/*.png
@@ -9,13 +9,14 @@ import { Resvg } from '@resvg/resvg-js'
 import { mkdirSync, writeFileSync } from 'node:fs'
 
 const BG = '#0a0a0b'
-const BOLT = '#ffd100'
+const MARK = '#ffd100'
 
-// El rayo (path de 24 unidades) escalado y centrado en un lienzo de 512×512.
-// Queda a ~66% de alto: sobra margen para el recorte "maskable" de Android.
+// El logo (mismo path de 24 unidades que src/ui/Icon.tsx `logo`) escalado y
+// centrado en un lienzo de 512×512. Queda a ~75% de alto: sobra margen para
+// el recorte "maskable" de Android.
 const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
   <rect width="512" height="512" fill="${BG}"/>
-  <path transform="translate(52,52) scale(17)" d="M7 2v11h3v9l7-12h-4l4-8z" fill="${BOLT}"/>
+  <path transform="translate(76,76) scale(15)" d="M6,3 L21,3 L18,8 L11,16 L21,16 L18,21 L3,21 L6,16 L13,8 L3,8 Z" fill="${MARK}"/>
 </svg>`
 
 mkdirSync('public/icons', { recursive: true })
@@ -38,9 +39,9 @@ writeFileSync('public/icon.svg', svg)
 console.log('escrito public/icon.svg')
 
 const manifest = {
-  name: 'Thunder · POS Zapatillas',
-  short_name: 'Thunder',
-  description: 'Punto de venta Thunder',
+  name: 'ZEN · POS Zapatillas',
+  short_name: 'ZEN',
+  description: 'Punto de venta ZEN',
   start_url: '/',
   scope: '/',
   display: 'standalone',

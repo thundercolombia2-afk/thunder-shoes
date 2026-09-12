@@ -56,12 +56,13 @@ export function ScanScreen() {
   const inputRef = useRef<HTMLInputElement>(null)
   const canUseCamera = useMemo(cameraScanSupported, [])
 
-  // Bodegas activas que el usuario puede operar: la dueña las opera todas; los
-  // demás, solo las que se les autorizaron en Configuración → Autorizaciones.
+  // Bodegas activas que el usuario puede operar: los socios (stock compartido
+  // entre locales) las operan todas; el bodeguero y el resto, solo las que se
+  // les autorizaron en Configuración → Autorizaciones.
   const activeAuthorizedBodegaIds = useMemo(
     () =>
       bodegas
-        .filter((b) => b.active && (user?.owner || (user?.bodegaIds ?? []).includes(b.id)))
+        .filter((b) => b.active && (user?.role === 'socio' || (user?.bodegaIds ?? []).includes(b.id)))
         .map((b) => b.id),
     [bodegas, user],
   )
@@ -573,7 +574,7 @@ export function ScanScreen() {
           saleBlocked={saleExceeds}
           bodegaBlocked={!hasBodegaAccess}
           showSale={can('sell')}
-          showBodega={user?.role === 'bodeguero' || user?.owner === true}
+          showBodega={user?.role === 'bodeguero' || user?.role === 'socio'}
           sticky={!isMobile}
           onCobrar={() => openDialog('cobro')}
           onDevolucion={() => openDialog('devolucion')}

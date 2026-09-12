@@ -1,7 +1,7 @@
 rules_version = '2';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Reglas de seguridad de Thunder POS.
+// Reglas de seguridad de ZEN POS.
 //
 // Modelo: cada persona inicia sesión (correo + contraseña). El ROL vive en
 // users/{uid} y lo leen las reglas — nunca se confía en lo que diga el cliente.
@@ -197,11 +197,13 @@ service cloud.firestore {
         && request.resource.data.userId == uid()
         && isValidMovement(request.resource.data);
       // El libro mayor no se EDITA: los importes, cantidades, ubicaciones y
-      // firmas de un asiento son intocables. La ÚNICA excepción es el estado de
-      // cobro de una venta (cobrado / pendiente / devuelto), porque la plata de
-      // una venta por transportadora entra días después. La regla permite el
-      // cambio solo si NO se tocó ningún otro campo.
-      allow update: if hasProfile() && onlySaleStatusChanged();
+      // firmas de un asiento son intocables. Dos únicas excepciones, cada una
+      // acotada a sus propios campos:
+      //  · el estado de cobro de una venta (cobrado / pendiente / devuelto),
+      //    porque la plata de una venta por transportadora entra días después;
+      //  · la bandera "pendiente" de una ENTREGA, que solo puede tocar el
+      //    ENCARGADO (targetUserId) al que bodega se la asignó.
+      allow update: if hasProfile() && (onlySaleStatusChanged() || onlyDeliveryPendingChanged());
       // Borrarlo solo lo puede hacer la DUEÑA (vaciar historial para empezar
       // limpio); ningún empleado ni socio normal.
       allow delete: if isOwner();
@@ -222,6 +224,19 @@ service cloud.firestore {
         && request.resource.data.saleStatusAt == request.time;
     }
 
+    // Solo el ENCARGADO de la entrega (targetUserId) puede tocar su bandera de
+    // pendiente: los demás la ven, pero no pueden marcarla ni desmarcarla.
+    function onlyDeliveryPendingChanged() {
+      return resource.data.type == 'salida'
+        && resource.data.get('targetUserId', '') == uid()
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['deliveryPending', 'deliveryPendingAt', 'deliveryPendingBy', 'deliveryPendingByUid'])
+        && request.resource.data.deliveryPending is bool
+        && request.resource.data.deliveryPending != resource.data.get('deliveryPending', false)
+        && request.resource.data.deliveryPendingByUid == uid()
+        && request.resource.data.deliveryPendingAt == request.time;
+    }
+
     function isValidMovement(m) {
       return m.type in ['sale', 'purchase', 'return', 'salida', 'retorno', 'baja']
         && m.quantity is int && m.quantity >= 1
@@ -232,7 +247,16 @@ service cloud.firestore {
         && m.total is number
         && m.stockAfter is int
         && m.dayKey is string
-        && m.occurredAt is timestamp;
+        && m.occurredAt is timestamp
+        // Cobrar una entrega (venta con `deliveryId`) es exclusivo del
+        // ENCARGADO al que bodega se la asignó: nadie más puede registrar esa
+        // venta en su nombre.
+        && (m.type != 'sale' || !('deliveryId' in m) || isDeliveryOwner(m.deliveryId));
+    }
+
+    function isDeliveryOwner(deliveryId) {
+      return exists(/databases/$(database)/documents/movements/$(deliveryId))
+        && get(/databases/$(database)/documents/movements/$(deliveryId)).data.get('targetUserId', '') == uid();
     }
 
     // Todo lo demás, denegado.

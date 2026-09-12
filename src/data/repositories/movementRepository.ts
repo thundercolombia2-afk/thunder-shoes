@@ -124,6 +124,10 @@ export const movementRepository = {
       )
 
       const movements: Movement[] = []
+      // Paralelo a `movements`: si esa línea le mueve la aguja a `dailyStats`.
+      // Una venta 'pendiente' no cuenta todavía, y su eventual devolución
+      // tampoco debe restar lo que nunca se sumó (ver `saleWasCounted`).
+      const counted: boolean[] = []
       const writes: {
         productId: ProductId
         size: Size
@@ -189,9 +193,16 @@ export const movementRepository = {
         if (draft.deliveryId) movement.deliveryId = draft.deliveryId
         // Estado de cobro: solo en ventas, y solo si no es el normal (cobrado),
         // para no engordar cada asiento del libro mayor con un valor por defecto.
+        // `statusOverride` (Cobrar/Pendiente explícito desde Entregas) manda
+        // sobre lo que se infiera del método de pago.
         if (draft.type === 'sale') {
-          const status = defaultSaleStatus(meta?.payment)
+          const status = meta?.statusOverride ?? defaultSaleStatus(meta?.payment)
           if (status !== 'cobrado') movement.saleStatus = status
+          counted.push(status === 'cobrado')
+        } else if (draft.type === 'return') {
+          counted.push(draft.saleWasCounted ?? true)
+        } else {
+          counted.push(true)
         }
         // Siempre: sin `saleId` no se puede reconstruir el tiquete ni saber
         // qué se devolvió de qué venta.
@@ -229,7 +240,7 @@ export const movementRepository = {
         tx.update(variantRef(productId, size), update)
       })
 
-      tx.set(dailyStatsRef(dayKey), buildDailyDelta(movements, actor.storeId, occurredAt), {
+      tx.set(dailyStatsRef(dayKey), buildDailyDelta(movements, counted, actor.storeId, occurredAt), {
         merge: true,
       })
 
@@ -287,6 +298,10 @@ export const movementRepository = {
           toLocation: bodegaKey(bodegaId),
           unitPriceOverride: sale.snapshot.unitPrice,
           unitCostOverride: sale.snapshot.unitCost,
+          // Si la venta seguía 'pendiente', esa plata nunca entró a
+          // `dailyStats`: la devolución no debe restarla. Si ya estaba
+          // 'cobrado', sí hay que revertirla, igual que siempre.
+          saleWasCounted: (sale.saleStatus ?? 'cobrado') === 'cobrado',
         },
       ],
       asSaleStore,
@@ -313,9 +328,13 @@ export const movementRepository = {
    * más estrecha posible: no toca importes, cantidades ni stock — solo el
    * estado y su firma. Las reglas de Firestore verifican exactamente eso.
    *
-   * No mueve `dailyStats`: la venta ya entró el día que se hizo. Lo pendiente
-   * se ve aparte en la vista de cada local, y si el cliente no paga, la
-   * devolución (un asiento nuevo) es la que revierte la plata.
+   * SÍ mueve `dailyStats`, pero solo en el ida-y-vuelta cobrado↔pendiente: es
+   * la única transición que cambia si esa plata ya es ingreso real. Se abona
+   * al día en que se confirma el cobro (HOY), no al día en que se hizo la
+   * venta — así una venta por transportadora que se despachó el 11 y se
+   * confirma el 25 aparece como ingreso el 25, que es cuando entró la plata
+   * de verdad. La transición a/desde `devuelto` no toca `dailyStats` aquí: de
+   * eso ya se encarga el asiento de devolución (`returnSaleToBodega`).
    */
   async setSaleStatus(
     movementId: string,
@@ -323,13 +342,63 @@ export const movementRepository = {
     actor: Pick<MovementActor, 'userId' | 'userName'>,
   ): Promise<void> {
     if (DEMO) return demoBackend.setSaleStatus(movementId, status, actor)
+    const ref = doc(movementsRef(), movementId)
+    await runTransaction(db, async (tx) => {
+      const snap = await tx.get(ref)
+      if (!snap.exists()) throw new DomainError('BARCODE_NOT_FOUND', 'Esa venta ya no existe')
+      const current = movementFromDoc(snap as QueryDocumentSnapshot<DocumentData>)
+      const from = current.saleStatus ?? 'cobrado'
+
+      tx.update(ref, {
+        saleStatus: status,
+        // `serverTimestamp` y no la hora del equipo: la regla exige que
+        // coincida con `request.time`, y así la firma no se puede falsear.
+        saleStatusAt: serverTimestamp(),
+        saleStatusBy: actor.userName,
+        saleStatusByUid: actor.userId,
+      })
+
+      const becomesCollected = from === 'pendiente' && status === 'cobrado'
+      const becomesPending = from === 'cobrado' && status === 'pendiente'
+      if (!becomesCollected && !becomesPending) return
+
+      const now = new Date()
+      const sign = becomesCollected ? 1 : -1
+      tx.set(
+        dailyStatsRef(toDayKey(now)),
+        {
+          dayKey: toDayKey(now),
+          updatedAt: Timestamp.fromDate(now),
+          margin: increment(sign * current.margin),
+          salesTotal: increment(sign * current.total),
+          salesCount: increment(sign),
+          unitsSold: increment(sign * current.quantity),
+          salesByStore: { [current.storeId]: increment(sign * current.total) },
+          unitsByProduct: { [current.productId]: increment(sign * current.quantity) },
+        },
+        { merge: true },
+      )
+    })
+  },
+
+  /**
+   * Marca (o desmarca) una ENTREGA como pendiente por confirmar, sin
+   * registrar ninguna venta todavía: es solo la bandera que hace que aparezca
+   * en la pestaña Pendiente. Las reglas de Firestore exigen que quien la toca
+   * sea el ENCARGADO (`targetUserId`) al que bodega se la asignó — nadie más
+   * puede marcarla ni desmarcarla, aunque sí pueden verla.
+   */
+  async setDeliveryPending(
+    movementId: string,
+    pending: boolean,
+    actor: Pick<MovementActor, 'userId' | 'userName'>,
+  ): Promise<void> {
+    if (DEMO) return demoBackend.setDeliveryPending(movementId, pending, actor)
     await updateDoc(doc(movementsRef(), movementId), {
-      saleStatus: status,
-      // `serverTimestamp` y no la hora del equipo: la regla exige que coincida
-      // con `request.time`, y así la firma del cambio no se puede falsear.
-      saleStatusAt: serverTimestamp(),
-      saleStatusBy: actor.userName,
-      saleStatusByUid: actor.userId,
+      deliveryPending: pending,
+      deliveryPendingAt: serverTimestamp(),
+      deliveryPendingBy: actor.userName,
+      deliveryPendingByUid: actor.userId,
     })
   },
 
@@ -560,7 +629,12 @@ function mergeDrafts(drafts: MovementDraft[]): MovementDraft[] {
  * el delta sin leer el valor previo, así que dos cajas vendiendo a la vez no
  * pierden ninguna venta.
  */
-function buildDailyDelta(movements: Movement[], storeId: StoreId, now: Date): DocumentData {
+function buildDailyDelta(
+  movements: Movement[],
+  counted: boolean[],
+  storeId: StoreId,
+  now: Date,
+): DocumentData {
   const totals = {
     margin: 0,
     salesTotal: 0,
@@ -577,10 +651,15 @@ function buildDailyDelta(movements: Movement[], storeId: StoreId, now: Date): Do
 
   const dayKey = movements[0]?.dayKey ?? toDayKey(now)
 
-  for (const m of movements) {
-    totals.margin += m.margin
+  movements.forEach((m, i) => {
+    const isCounted = counted[i] ?? true
     switch (m.type as MovementType) {
       case 'sale':
+        // Una venta 'pendiente' (por transportadora, sin confirmar todavía) no
+        // es ingreso real hasta que alguien la marque 'cobrado': se cuenta ese
+        // día, no el día en que salió mercancía.
+        if (!isCounted) break
+        totals.margin += m.margin
         totals.salesTotal += m.total
         totals.salesCount += 1
         totals.unitsSold += m.quantity
@@ -588,11 +667,18 @@ function buildDailyDelta(movements: Movement[], storeId: StoreId, now: Date): Do
         bump(m.productId, m.quantity)
         break
       case 'purchase':
+        totals.margin += m.margin
         totals.purchasesTotal += m.total
         totals.purchasesCount += 1
         break
       case 'return':
+        // El valor de lo que volvió se registra siempre, haya entrado la plata
+        // o no. Pero si la venta que revierte nunca se contó como ingreso
+        // (seguía 'pendiente'), no hay nada que restar de `salesTotal`: restar
+        // igual la dejaría en negativo por plata que jamás entró.
         totals.returnsTotal += m.total
+        if (!isCounted) break
+        totals.margin += m.margin
         // Una devolución revierte la venta: unidades, plata del día y plata del
         // local. `salesTotal` tiene que bajar igual que `salesByStore` — si no,
         // el titular "Ventas de hoy" queda inflado mientras el desglose por
@@ -604,8 +690,10 @@ function buildDailyDelta(movements: Movement[], storeId: StoreId, now: Date): Do
         totals.byStore -= m.total
         bump(m.productId, -m.quantity)
         break
+      default:
+        totals.margin += m.margin
     }
-  }
+  })
 
   const delta: DocumentData = {
     dayKey,

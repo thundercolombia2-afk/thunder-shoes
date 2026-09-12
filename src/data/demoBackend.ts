@@ -161,24 +161,38 @@ function emptyStats(dayKey: string): DailyStats {
   }
 }
 
-function applyToStats(m: Movement) {
+/**
+ * `counted`: si esta línea le mueve la aguja a `dailyStats`. Una venta
+ * 'pendiente' no es ingreso todavía, y su devolución tampoco resta lo que
+ * nunca se sumó — ver `saleWasCounted` en `domain/models.ts`.
+ */
+function applyToStats(m: Movement, counted = true) {
   const s = statsByDay.get(m.dayKey) ?? emptyStats(m.dayKey)
-  s.margin = money(s.margin + m.margin)
   if (m.type === 'sale') {
-    s.salesTotal = money(s.salesTotal + m.total)
-    s.salesCount += 1
-    s.unitsSold += m.quantity
-    s.salesByStore[m.storeId] = (s.salesByStore[m.storeId] ?? 0) + m.total
-    s.unitsByProduct[m.productId] = (s.unitsByProduct[m.productId] ?? 0) + m.quantity
+    if (counted) {
+      s.margin = money(s.margin + m.margin)
+      s.salesTotal = money(s.salesTotal + m.total)
+      s.salesCount += 1
+      s.unitsSold += m.quantity
+      s.salesByStore[m.storeId] = (s.salesByStore[m.storeId] ?? 0) + m.total
+      s.unitsByProduct[m.productId] = (s.unitsByProduct[m.productId] ?? 0) + m.quantity
+    }
   } else if (m.type === 'purchase') {
+    s.margin = money(s.margin + m.margin)
     s.purchasesTotal = money(s.purchasesTotal + m.total)
     s.purchasesCount += 1
   } else if (m.type === 'return') {
     s.returnsTotal = money(s.returnsTotal + m.total)
-    s.salesTotal = money(s.salesTotal - m.total)
-    s.unitsSold -= m.quantity
-    s.salesByStore[m.storeId] = (s.salesByStore[m.storeId] ?? 0) - m.total
-    s.unitsByProduct[m.productId] = (s.unitsByProduct[m.productId] ?? 0) - m.quantity
+    if (counted) {
+      s.margin = money(s.margin + m.margin)
+      s.salesTotal = money(s.salesTotal - m.total)
+      s.salesCount -= 1
+      s.unitsSold -= m.quantity
+      s.salesByStore[m.storeId] = (s.salesByStore[m.storeId] ?? 0) - m.total
+      s.unitsByProduct[m.productId] = (s.unitsByProduct[m.productId] ?? 0) - m.quantity
+    }
+  } else {
+    s.margin = money(s.margin + m.margin)
   }
   statsByDay.set(m.dayKey, s)
 }
@@ -243,7 +257,7 @@ for (let k = 0; k < 22; k++) {
     if (status !== 'cobrado') m.saleStatus = status
   }
   movements.push(m)
-  applyToStats(m)
+  applyToStats(m, type === 'sale' ? (m.saleStatus ?? 'cobrado') === 'cobrado' : true)
 }
 movements.reverse() // más recientes primero para el historial
 
@@ -251,7 +265,7 @@ movements.reverse() // más recientes primero para el historial
 const demoUser: UserProfile = {
   id: 'demo-uid' as UserId,
   name: 'Dueña Demo',
-  email: 'demo@thunder.pos',
+  email: 'demo@zen.pos',
   role: 'socio', // cámbialo a 'empleado' o 'bodeguero' para previsualizar otras vistas
   storeId: '163' as StoreId,
   bodegaIds: [DEMO_BODEGA_ID],
@@ -261,9 +275,9 @@ const demoUser: UserProfile = {
 }
 const team: UserProfile[] = [
   demoUser,
-  { id: 'demo-u1' as UserId, name: 'María G.', email: 'maria@thunder.pos', role: 'empleado', storeId: '163' as StoreId, active: true, createdAt: now },
-  { id: 'demo-u2' as UserId, name: 'Andrés P.', email: 'andres@thunder.pos', role: 'empleado', storeId: '173' as StoreId, active: true, createdAt: now },
-  { id: 'demo-u3' as UserId, name: 'Bruno Bodega', email: 'bruno@thunder.pos', role: 'bodeguero', bodegaIds: [DEMO_BODEGA_ID], active: true, createdAt: now },
+  { id: 'demo-u1' as UserId, name: 'María G.', email: 'maria@zen.pos', role: 'empleado', storeId: '163' as StoreId, active: true, createdAt: now },
+  { id: 'demo-u2' as UserId, name: 'Andrés P.', email: 'andres@zen.pos', role: 'empleado', storeId: '173' as StoreId, active: true, createdAt: now },
+  { id: 'demo-u3' as UserId, name: 'Bruno Bodega', email: 'bruno@zen.pos', role: 'bodeguero', bodegaIds: [DEMO_BODEGA_ID], active: true, createdAt: now },
 ]
 const invites: Invite[] = []
 
@@ -481,9 +495,13 @@ export const demoBackend = {
       if (draft.targetUserId) movement.targetUserId = draft.targetUserId
       if (draft.targetUserName) movement.targetUserName = draft.targetUserName
       if (draft.deliveryId) movement.deliveryId = draft.deliveryId
+      let counted = true
       if (draft.type === 'sale') {
-        const status = defaultSaleStatus(meta?.payment)
+        const status = meta?.statusOverride ?? defaultSaleStatus(meta?.payment)
         if (status !== 'cobrado') movement.saleStatus = status
+        counted = status === 'cobrado'
+      } else if (draft.type === 'return') {
+        counted = draft.saleWasCounted ?? true
       }
       // Igual que el backend real: SIEMPRE lleva `saleId`, y respeta el que
       // venga en `meta` (una devolución cuelga de su venta original). Sin esto
@@ -494,7 +512,7 @@ export const demoBackend = {
       if (meta?.customerPhone) movement.customerPhone = meta.customerPhone
 
       movements.unshift(movement)
-      applyToStats(movement)
+      applyToStats(movement, counted)
       created.push(movement)
     }
 
@@ -509,10 +527,42 @@ export const demoBackend = {
   ): Promise<void> {
     const m = movements.find((x) => x.id === movementId)
     if (!m) return Promise.reject(new DomainError('BARCODE_NOT_FOUND', 'Movimiento no encontrado'))
+    const from = m.saleStatus ?? 'cobrado'
     m.saleStatus = status
     m.saleStatusAt = new Date()
     m.saleStatusBy = actor.userName
     m.saleStatusByUid = actor.userId as UserId
+
+    // Igual que el backend real: solo cobrado<->pendiente mueve `dailyStats`,
+    // y se abona al día de HOY (cuando se confirma), no al de la venta.
+    const becomesCollected = from === 'pendiente' && status === 'cobrado'
+    const becomesPending = from === 'cobrado' && status === 'pendiente'
+    if (becomesCollected || becomesPending) {
+      const today = toDayKey(new Date())
+      const s = statsByDay.get(today) ?? emptyStats(today)
+      const sign = becomesCollected ? 1 : -1
+      s.margin = money(s.margin + sign * m.margin)
+      s.salesTotal = money(s.salesTotal + sign * m.total)
+      s.salesCount += sign
+      s.unitsSold += sign * m.quantity
+      s.salesByStore[m.storeId] = (s.salesByStore[m.storeId] ?? 0) + sign * m.total
+      s.unitsByProduct[m.productId] = (s.unitsByProduct[m.productId] ?? 0) + sign * m.quantity
+      statsByDay.set(today, s)
+    }
+    return Promise.resolve()
+  },
+
+  setDeliveryPending(
+    movementId: string,
+    pending: boolean,
+    actor: { userId: string; userName: string },
+  ): Promise<void> {
+    const m = movements.find((x) => x.id === movementId)
+    if (!m) return Promise.reject(new DomainError('BARCODE_NOT_FOUND', 'Movimiento no encontrado'))
+    m.deliveryPending = pending
+    m.deliveryPendingAt = new Date()
+    m.deliveryPendingBy = actor.userName
+    m.deliveryPendingByUid = actor.userId as UserId
     return Promise.resolve()
   },
 
@@ -575,6 +625,12 @@ export const demoBackend = {
   listRecentDays(days: number): Promise<DailyStats[]> {
     const keys = recentDayKeys(days)
     return Promise.resolve(keys.map((k) => statsByDay.get(k) ?? emptyStats(k)))
+  },
+
+  listStatsRange(fromDayKey: string, toDayKey: string): Promise<DailyStats[]> {
+    return Promise.resolve(
+      [...statsByDay.values()].filter((s) => s.dayKey >= fromDayKey && s.dayKey <= toDayKey),
+    )
   },
 
   // Equipo

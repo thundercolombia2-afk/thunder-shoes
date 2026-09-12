@@ -9,6 +9,8 @@ import { useBodegas, useMovements, useStores } from '@/app/hooks'
 import { useSession } from '@/app/session'
 import { movementRepository } from '@/data/repositories/movementRepository'
 import { configRepository } from '@/data/repositories/configRepository'
+import { teamRepository } from '@/data/repositories/teamRepository'
+import type { UserProfile } from '@/domain/users'
 import {
   MOVEMENT_LABEL,
   errorMessage,
@@ -19,7 +21,7 @@ import {
 } from '@/domain/rules'
 import { matchesMovement } from '@/domain/sales'
 import { MOVEMENT_TYPES, type Movement, type MovementType } from '@/domain/models'
-import { formatMoney, formatShortDate, recentDayKeys } from '@/lib/format'
+import { formatMoney, formatShortDate, recentDayKeys, toDayKey } from '@/lib/format'
 import { downloadCsv, toCsv } from '@/lib/csv'
 import { movementPlace, RoleBadge, SaleStatusChip, type MovementPlace } from './_shared'
 import { SearchBox } from './InventoryScreen'
@@ -40,6 +42,28 @@ const TONE: Record<MovementType, string> = {
   baja: 'var(--color-danger)',
 }
 
+const dateFieldStyle: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 3 }
+const dateLabelStyle: React.CSSProperties = { font: '700 11px var(--font-body)', color: 'var(--text-muted)' }
+const dateInputStyle: React.CSSProperties = {
+  height: 40,
+  padding: '0 10px',
+  borderRadius: 'var(--radius-md)',
+  border: '1.5px solid var(--border-subtle)',
+  background: 'var(--surface-card)',
+  color: 'var(--text-primary)',
+  font: '600 13px var(--font-body)',
+}
+const selectStyle: React.CSSProperties = {
+  height: 40,
+  padding: '0 10px',
+  borderRadius: 'var(--radius-md)',
+  border: '1.5px solid var(--border-subtle)',
+  background: 'var(--surface-card)',
+  color: 'var(--text-primary)',
+  font: '700 13px var(--font-body)',
+  cursor: 'pointer',
+}
+
 export function HistoryScreen() {
   const { user, can } = useSession()
   const { data: stores } = useStores()
@@ -51,8 +75,18 @@ export function HistoryScreen() {
   const isBodeguero = user?.role === 'bodeguero'
   const [typeFilter, setTypeFilter] = useState<MovementType | 'all'>(isBodeguero ? 'salida' : 'all')
   const [search, setSearch] = useState('')
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
+  const [userFilter, setUserFilter] = useState('')
+  const [team, setTeam] = useState<UserProfile[]>([])
   const [exporting, setExporting] = useState(false)
   const [wiping, setWiping] = useState(false)
+
+  // Para el filtro "Usuario": el equipo completo, sin importar el rol de quien
+  // mira (las reglas de Firestore ya permiten leer /users a cualquier firmado).
+  useEffect(() => {
+    teamRepository.listTeam().then(setTeam).catch(() => undefined)
+  }, [])
 
   const filters: { label: string; value: MovementType | 'all' }[] = isBodeguero
     ? [
@@ -70,9 +104,13 @@ export function HistoryScreen() {
       movements.filter(
         (m) =>
           // El bodeguero solo ve lo que ÉL mismo entregó o recibió.
-          (!isBodeguero || m.userId === user?.id) && matchesMovement(m, search),
+          (!isBodeguero || m.userId === user?.id) &&
+          (!userFilter || m.userId === userFilter) &&
+          (!dateFrom || toDayKey(m.occurredAt) >= dateFrom) &&
+          (!dateTo || toDayKey(m.occurredAt) <= dateTo) &&
+          matchesMovement(m, search),
       ),
-    [movements, search, isBodeguero, user?.id],
+    [movements, search, isBodeguero, user?.id, userFilter, dateFrom, dateTo],
   )
 
   const exportCsv = async () => {
@@ -194,6 +232,47 @@ export function HistoryScreen() {
             </button>
           )
         })}
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+        <label style={dateFieldStyle}>
+          <span style={dateLabelStyle}>Desde</span>
+          <input type="date" value={dateFrom} max={dateTo || undefined} onChange={(e) => setDateFrom(e.target.value)} style={dateInputStyle} />
+        </label>
+        <label style={dateFieldStyle}>
+          <span style={dateLabelStyle}>Hasta</span>
+          <input type="date" value={dateTo} min={dateFrom || undefined} onChange={(e) => setDateTo(e.target.value)} style={dateInputStyle} />
+        </label>
+        {!isBodeguero ? (
+          <select value={userFilter} onChange={(e) => setUserFilter(e.target.value)} style={selectStyle}>
+            <option value="">Todos los usuarios</option>
+            {team.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        ) : null}
+        {dateFrom || dateTo || userFilter ? (
+          <button
+            onClick={() => {
+              setDateFrom('')
+              setDateTo('')
+              setUserFilter('')
+            }}
+            className="iw-press"
+            style={{
+              cursor: 'pointer',
+              background: 'transparent',
+              border: 'none',
+              color: 'var(--text-muted)',
+              font: '700 12.5px var(--font-body)',
+              padding: '9px 4px',
+            }}
+          >
+            Limpiar fecha/usuario
+          </button>
+        ) : null}
       </div>
 
       <div

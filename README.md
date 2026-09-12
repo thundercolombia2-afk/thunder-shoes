@@ -1,4 +1,4 @@
-# Thunder POS · Zapatillas
+# ZEN POS · Zapatillas
 
 Punto de venta para una tienda de zapatillas con **dos locales (163 y 173) que
 comparten una bodega central única**. Registra ventas, compras (reabastecer) y

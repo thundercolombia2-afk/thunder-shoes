@@ -264,10 +264,23 @@ export interface Movement {
   /**
    * A quién se le entregó el par (salida) o de quién se recibió (retorno). El
    * local queda en `from/toLocation`, pero varias personas comparten local: sin
-   * esto el historial no puede decir A QUIÉN se le dio el zapato.
+   * esto el historial no puede decir A QUIÉN se le dio el zapato. En una
+   * salida, esta persona es también el ÚNICO ENCARGADO que puede cobrarla o
+   * marcarla pendiente — nadie más opera esa entrega en su nombre.
    */
   targetUserId?: UserId
   targetUserName?: string
+
+  /**
+   * Solo en salidas (entregas): el ENCARGADO la marcó pendiente por confirmar,
+   * sin haber registrado todavía ninguna venta. Vive en la propia entrega (no
+   * en una venta) porque, hasta que se toque "Cobrar", no hay venta que
+   * marcar — es la segunda y última excepción a la inmutabilidad del asiento.
+   */
+  deliveryPending?: boolean
+  deliveryPendingAt?: Date
+  deliveryPendingBy?: string
+  deliveryPendingByUid?: UserId
 
   /**
    * Id de la SALIDA de bodega que originó esta venta. Lo llevan las ventas
@@ -337,6 +350,14 @@ export interface MovementDraft {
   targetUserName?: string
   /** Solo en ventas cobradas desde una entrega: la salida que las originó. */
   deliveryId?: string
+  /**
+   * Solo en devoluciones: si la venta que revierte ya se había contado como
+   * ingreso (estaba `cobrado`). Por defecto `true` — así se comporta igual
+   * que una devolución de mostrador normal. `returnSaleToBodega` la manda en
+   * `false` cuando revierte una venta que seguía `pendiente`: esa plata nunca
+   * entró a `dailyStats`, así que la devolución tampoco debe restarla.
+   */
+  saleWasCounted?: boolean
 }
 
 /** Datos comunes a todas las líneas de una misma venta (el "tiquete"). */
@@ -349,6 +370,12 @@ export interface SaleMeta {
    * venta original, y así saber cuánto de cada talla ya se devolvió.
    */
   saleId?: string
+  /**
+   * Fuerza el estado de cobro en vez de inferirlo del método de pago. Lo usa
+   * "Cobrar entrega": ahí la persona elige explícitamente Cobrado o Pendiente
+   * en vez de que se adivine por la forma de pago.
+   */
+  statusOverride?: SaleStatus
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -1,11 +1,11 @@
 /**
  * Iconos SVG del diseño, como un solo componente. Los trazos se copiaron tal
  * cual del prototipo para que la apariencia sea idéntica. Todos heredan el
- * color del texto (`stroke="currentColor"`) salvo el rayo de la marca.
+ * color del texto (`stroke="currentColor"`) salvo el logo de la marca.
  */
 
 export type IconName =
-  | 'bolt'
+  | 'logo'
   | 'scan'
   | 'box'
   | 'list'
@@ -45,11 +45,11 @@ interface IconProps {
 
 /** Iconos rellenos (usan `fill`, no `stroke`). */
 const FILLED: Partial<Record<IconName, string>> = {
-  bolt: 'M13 2 4 14h6l-1 8 9-12h-6z',
+  logo: 'M6,3 L21,3 L18,8 L11,16 L21,16 L18,21 L3,21 L6,16 L13,8 L3,8 Z',
 }
 
 const PATHS: Record<IconName, string> = {
-  bolt: 'M13 2 4 14h6l-1 8 9-12h-6z',
+  logo: 'M6,3 L21,3 L18,8 L11,16 L21,16 L18,21 L3,21 L6,16 L13,8 L3,8 Z',
   scan: 'M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2M7 12h10',
   box: 'M21 8l-9-5-9 5 9 5 9-5zM3 8v8l9 5 9-5V8',
   list: 'M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01',

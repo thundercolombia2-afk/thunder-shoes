@@ -5,25 +5,62 @@
  */
 
 import { useEffect, useMemo, useState } from 'react'
-import { useCatalog, useStats, useStores } from '@/app/hooks'
+import { useCatalog, useStores } from '@/app/hooks'
 import { useSession } from '@/app/session'
 import { movementRepository } from '@/data/repositories/movementRepository'
+import { statsRepository } from '@/data/repositories/statsRepository'
 import { expenseRepository } from '@/data/repositories/expenseRepository'
 import { movementLocalId } from '@/domain/rules'
 import { matchesFields, matchesMovement } from '@/domain/sales'
-import { formatLongDate, formatMoney, formatMoneyInput, formatShortDate, parseMoneyInput } from '@/lib/format'
+import { formatLongDate, formatMoney, formatMoneyInput, formatShortDate, parseMoneyInput, toDayKey } from '@/lib/format'
 import { RoleBadge, storeCodeOf } from './_shared'
 import { SearchBox } from './InventoryScreen'
 import { Icon } from '@/ui/Icon'
 import { Money } from '@/ui/Money'
 import { money, type DailyStats, type Expense, type ExpenseDraft, type Movement, type Store } from '@/domain/models'
 
+const dateFieldStyle: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 3 }
+const dateLabelStyle: React.CSSProperties = { font: '700 11px var(--font-body)', color: 'var(--text-muted)' }
+const dateInputStyle: React.CSSProperties = {
+  height: 40,
+  padding: '0 10px',
+  borderRadius: 'var(--radius-md)',
+  border: '1.5px solid var(--border-subtle)',
+  background: 'var(--surface-card)',
+  color: 'var(--text-primary)',
+  font: '600 13px var(--font-body)',
+}
+
+/** "2026-07-15" -> Date al mediodía UTC de ese día (evita saltos por huso horario). */
+function dayKeyToDate(key: string): Date {
+  const [y, m, d] = key.split('-').map(Number)
+  return new Date(Date.UTC(y ?? 1970, (m ?? 1) - 1, d ?? 1, 12))
+}
+
+/** Suma los campos numéricos de varios días de `dailyStats` en un solo total. */
+function sumRangeStats(list: DailyStats[]) {
+  const acc = { salesTotal: 0, purchasesTotal: 0, purchasesCount: 0, margin: 0, salesByStore: {} as Record<string, number> }
+  for (const d of list) {
+    acc.salesTotal += d.salesTotal
+    acc.purchasesTotal += d.purchasesTotal
+    acc.purchasesCount += d.purchasesCount
+    acc.margin += d.margin
+    for (const [storeId, v] of Object.entries(d.salesByStore)) {
+      acc.salesByStore[storeId] = (acc.salesByStore[storeId] ?? 0) + v
+    }
+  }
+  return acc
+}
+
 export function DashboardScreen() {
-  const { data: days } = useStats(7)
   const { data: catalog } = useCatalog()
   const { data: stores } = useStores()
   const { user, can } = useSession()
   const adminUnlocked = can('seeCosts')
+  // Los egresos son un libro que solo administra la dueña/socio (así lo exige
+  // Firestore también): `seeCosts` de más arriba incluye al bodeguero, que no
+  // debe poder crear/editar/eliminar egresos.
+  const canManageExpenses = user?.role === 'socio'
 
   // Ingresos (ventas) y egresos (gastos a mano) para las tablas.
   const [movs, setMovs] = useState<Movement[]>([])
@@ -33,9 +70,34 @@ export function DashboardScreen() {
     movementRepository.listRecent().then(setMovs).catch(() => undefined)
   }, [])
   useEffect(() => expenseRepository.subscribe(setExpenses), [])
-  const incomes = useMemo(() => movs.filter((m) => m.type === 'sale'), [movs])
 
-  const today: DailyStats | undefined = days.at(-1)
+  // Rango de fechas de las tarjetas de resumen (por defecto, solo hoy). Se
+  // apoya en `dailyStats`, así que sirve para cualquier rango sin escanear el
+  // libro mayor.
+  const todayKey = toDayKey(new Date())
+  const [dateFrom, setDateFrom] = useState(todayKey)
+  const [dateTo, setDateTo] = useState(todayKey)
+  const [rangeStats, setRangeStats] = useState<DailyStats[]>([])
+  useEffect(() => {
+    statsRepository.listRange(dateFrom, dateTo).then(setRangeStats).catch(() => undefined)
+  }, [dateFrom, dateTo])
+  const summary = useMemo(() => sumRangeStats(rangeStats), [rangeStats])
+  const isToday = dateFrom === todayKey && dateTo === todayKey
+  const rangeLabel = isToday
+    ? `Hoy · ${formatLongDate(new Date())}`
+    : dateFrom === dateTo
+      ? formatLongDate(dayKeyToDate(dateFrom))
+      : `${formatShortDate(dayKeyToDate(dateFrom))} – ${formatShortDate(dayKeyToDate(dateTo))}`
+
+  // Las tablas de abajo (Ingresos/Egresos) respetan el mismo rango.
+  const incomes = useMemo(
+    () => movs.filter((m) => m.type === 'sale' && m.dayKey >= dateFrom && m.dayKey <= dateTo),
+    [movs, dateFrom, dateTo],
+  )
+  const expensesInRange = useMemo(
+    () => expenses.filter((e) => e.dayKey >= dateFrom && e.dayKey <= dateTo),
+    [expenses, dateFrom, dateTo],
+  )
 
   const totalStock = useMemo(() => catalog.reduce((s, r) => s + r.totalStock, 0), [catalog])
 
@@ -44,26 +106,49 @@ export function DashboardScreen() {
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <div style={{ flex: 1 }}>
           <h1 style={{ margin: 0, font: '700 24px var(--font-display)' }}>Ingresos y egresos</h1>
-          <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>Hoy · {formatLongDate(new Date())}</span>
+          <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>{rangeLabel}</span>
         </div>
         {user ? <RoleBadge role={user.role} /> : null}
       </div>
 
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+        <label style={dateFieldStyle}>
+          <span style={dateLabelStyle}>Desde</span>
+          <input type="date" value={dateFrom} max={dateTo} onChange={(e) => setDateFrom(e.target.value)} style={dateInputStyle} />
+        </label>
+        <label style={dateFieldStyle}>
+          <span style={dateLabelStyle}>Hasta</span>
+          <input type="date" value={dateTo} min={dateFrom} max={todayKey} onChange={(e) => setDateTo(e.target.value)} style={dateInputStyle} />
+        </label>
+        {!isToday ? (
+          <button
+            onClick={() => {
+              setDateFrom(todayKey)
+              setDateTo(todayKey)
+            }}
+            className="iw-press"
+            style={{ cursor: 'pointer', background: 'transparent', border: 'none', color: 'var(--text-muted)', font: '700 12.5px var(--font-body)', padding: '9px 4px' }}
+          >
+            Volver a hoy
+          </button>
+        ) : null}
+      </div>
+
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 12 }}>
         <div style={{ background: 'var(--iw-plum)', color: '#fff', borderRadius: 'var(--radius-lg)', padding: '16px 18px', boxShadow: 'var(--shadow-md)' }}>
-          <div style={{ fontSize: 12, opacity: 0.75, fontWeight: 700 }}>Ventas de hoy</div>
+          <div style={{ fontSize: 12, opacity: 0.75, fontWeight: 700 }}>Ventas</div>
           <div style={{ font: '700 var(--font-display)', fontSize: 'clamp(20px, 6vw, 26px)' }}>
-            <Money value={today?.salesTotal ?? 0} />
+            <Money value={summary.salesTotal} />
           </div>
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 11.5, opacity: 0.85, marginTop: 4 }}>
             {stores.map((s) => (
-              <span key={s.id}>{s.code} · <Money value={today?.salesByStore[s.id] ?? 0} /></span>
+              <span key={s.id}>{s.code} · <Money value={summary.salesByStore[s.id] ?? 0} /></span>
             ))}
           </div>
         </div>
 
         <PlainCard label="Stock total" value={String(totalStock)} foot={`${catalog.length} referencias`} />
-        <PlainCard label="Entradas de hoy" value={<Money value={today?.purchasesTotal ?? 0} />} foot={`${today?.purchasesCount ?? 0} ingresos de stock`} />
+        <PlainCard label="Entradas" value={<Money value={summary.purchasesTotal} />} foot={`${summary.purchasesCount} ingresos de stock`} />
 
         <div
           style={{
@@ -76,9 +161,9 @@ export function DashboardScreen() {
             overflow: 'hidden',
           }}
         >
-          <div style={{ fontSize: 12, opacity: 0.75, fontWeight: 700 }}>Utilidad de hoy</div>
+          <div style={{ fontSize: 12, opacity: 0.75, fontWeight: 700 }}>Utilidad</div>
           <div style={{ font: '700 var(--font-display)', fontSize: 'clamp(20px, 6vw, 26px)', filter: adminUnlocked ? 'none' : 'blur(7px)' }}>
-            {adminUnlocked ? <Money value={today?.margin ?? 0} /> : '••••'}
+            {adminUnlocked ? <Money value={summary.margin} /> : '••••'}
           </div>
           {!adminUnlocked ? (
             <div
@@ -131,8 +216,8 @@ export function DashboardScreen() {
         <IncomeTab incomes={incomes} stores={stores} />
       ) : (
         <ExpenseTab
-          expenses={expenses}
-          canAdd={adminUnlocked}
+          expenses={expensesInRange}
+          canAdd={canManageExpenses}
           actor={user ? { userId: user.id, userName: user.name } : null}
         />
       )}
@@ -428,8 +513,8 @@ function ExpenseFormModal({
   const label: React.CSSProperties = { display: 'block', font: '700 12.5px var(--font-body)', color: 'var(--text-secondary)', marginBottom: 5 }
 
   return (
-    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(12,12,13,.55)', backdropFilter: 'blur(2px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60, padding: 20, overflowY: 'auto' }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ width: 440, maxWidth: '100%', background: 'var(--surface-card)', borderRadius: 'var(--radius-2xl)', boxShadow: 'var(--shadow-lg)', padding: '22px 24px 24px', boxSizing: 'border-box' }}>
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(12,12,13,.55)', backdropFilter: 'blur(2px)', display: 'flex', justifyContent: 'center', zIndex: 60, padding: 20, overflowY: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: 440, maxWidth: '100%', margin: 'auto', maxHeight: '100%', overflowY: 'auto', background: 'var(--surface-card)', borderRadius: 'var(--radius-2xl)', boxShadow: 'var(--shadow-lg)', padding: '22px 24px 24px', boxSizing: 'border-box' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
           <h2 style={{ margin: 0, font: '700 20px var(--font-display)' }}>{initial ? 'Editar egreso' : 'Nuevo egreso'}</h2>
           <button onClick={onClose} aria-label="Cerrar" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 22, lineHeight: 1 }}>✕</button>

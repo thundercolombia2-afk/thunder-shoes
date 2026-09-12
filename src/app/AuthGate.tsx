@@ -44,7 +44,7 @@ function Splash() {
           justifyContent: 'center',
         }}
       >
-        <Icon name="bolt" size={24} color="var(--iw-plum)" />
+        <Icon name="logo" size={24} color="var(--iw-plum)" />
       </div>
       <span style={{ opacity: 0.7, fontSize: 14 }}>Conectando…</span>
     </div>

@@ -148,8 +148,8 @@ function MobileShell({
         }}
       >
         <div style={{ height: 34, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7 }}>
-          <Icon name="bolt" size={14} color="var(--iw-yellow)" />
-          <span style={{ font: '800 12px var(--font-display)', color: '#fff', letterSpacing: '.16em' }}>THUNDER</span>
+          <Icon name="logo" size={14} color="var(--iw-yellow)" />
+          <span style={{ font: '800 12px var(--font-display)', color: '#fff', letterSpacing: '.16em' }}>ZEN</span>
         </div>
       </div>
 
@@ -202,7 +202,7 @@ function MobileShell({
           >
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '4px 8px 14px' }}>
               <div style={{ width: 32, height: 32, borderRadius: 9, background: 'var(--iw-yellow)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <Icon name="bolt" size={17} color="var(--iw-plum)" />
+                <Icon name="logo" size={17} color="var(--iw-plum)" />
               </div>
               <div style={{ minWidth: 0 }}>
                 <div style={{ font: '700 14px var(--font-display)', color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{userName}</div>
@@ -277,10 +277,10 @@ function DesktopShell({
       <aside style={{ flex: 'none', width: 236, background: 'var(--iw-plum)', display: 'flex', flexDirection: 'column', padding: '22px 16px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '0 8px 22px' }}>
           <div style={{ width: 38, height: 38, borderRadius: 11, background: 'var(--iw-yellow)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <Icon name="bolt" size={22} color="var(--iw-plum)" />
+            <Icon name="logo" size={22} color="var(--iw-plum)" />
           </div>
           <div>
-            <div style={{ font: '700 16px var(--font-display)', color: '#fff', letterSpacing: '.1em' }}>THUNDER</div>
+            <div style={{ font: '700 16px var(--font-display)', color: '#fff', letterSpacing: '.1em' }}>ZEN</div>
             <div style={{ fontSize: 11, color: 'var(--iw-cream)', opacity: 0.6 }}>{storeCode ? `Local ${storeCode}` : 'Bodeguero'}</div>
           </div>
         </div>

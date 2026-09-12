@@ -1,9 +1,17 @@
 /**
- * Locales. Una pestaña por local y, dentro, cuatro sub-pestañas:
- *   · Vendido  — las ventas que hizo ese local.
- *   · Devuelto — las devoluciones registradas en ese local.
- *   · Stock    — lo que TIENE ese local, por talla.
- *   · Entregas — lo que le llegó desde bodega (salidas), con fecha y referencia.
+ * Locales. Una pestaña por local y, dentro, cinco sub-pestañas:
+ *   · Entregas  — lo que le llegó desde bodega (salidas), con fecha y referencia.
+ *                 El ENCARGADO (targetUserId, "a quién se le entregó") puede
+ *                 Cobrarla (abre el modal y registra la venta) o marcarla
+ *                 Pendiente (sin modal: solo la pasa al tab Pendiente y
+ *                 desaparece de acá). Los demás usuarios solo ven, sin botones.
+ *   · Pendiente — dos listas: las entregas que su encargado marcó pendiente
+ *                 (ahí sí cobra, con modal, o la retorna a Entregas) y las
+ *                 ventas ya registradas que siguen sin cobrarse (por
+ *                 transportadora).
+ *   · Vendido   — las ventas que hizo ese local.
+ *   · Devuelto  — las devoluciones registradas en ese local.
+ *   · Stock     — lo que TIENE ese local, por talla.
  * Es la vista de control del dueño: qué hizo y qué tiene cada local.
  */
 
@@ -20,10 +28,11 @@ import { ChipPicker, ModalHeader, movementPlace, QuantityStepper, SALE_STATUS_TO
 import { CobroModal, ErrorNote, Overlay } from './SellModals'
 import { mulMoney, type Bodega, type Money as MoneyAmount, type Movement, type SaleStatus, type Store } from '@/domain/models'
 
-type Tab = 'vendido' | 'devuelto' | 'stock' | 'entregas'
+type Tab = 'entregas' | 'pendiente' | 'vendido' | 'devuelto' | 'stock'
 // Entregas va primero: es lo primero que revisa el local al abrir la pantalla.
 const TABS: { key: Tab; label: string }[] = [
   { key: 'entregas', label: 'Entregas' },
+  { key: 'pendiente', label: 'Pendiente' },
   { key: 'vendido', label: 'Vendido' },
   { key: 'devuelto', label: 'Devuelto' },
   { key: 'stock', label: 'Stock' },
@@ -32,7 +41,7 @@ const TABS: { key: Tab; label: string }[] = [
 export function LocalesScreen() {
   const { data: stores } = useStores()
   const { data: catalog } = useCatalog()
-  const { actor } = useSession()
+  const { user, actor } = useSession()
   const bodegas = useBodegas()
   const [movs, setMovs] = useState<Movement[]>([])
   const [loading, setLoading] = useState(true)
@@ -43,6 +52,13 @@ export function LocalesScreen() {
   /** Entrega de bodega que se está cobrando (se vendió después de recibirla). */
   const [charging, setCharging] = useState<Movement | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
+  /** Error del último intento de cobrar/marcar pendiente, para no fallar en silencio. */
+  const [actionError, setActionError] = useState('')
+  /** Movimiento cuya tarjeta de detalle está abierta (info completa, sin recortar). */
+  const [detail, setDetail] = useState<Movement | null>(null)
+
+  /** El ENCARGADO de una entrega es la única persona que puede cobrarla o marcarla pendiente. */
+  const isMine = useCallback((m: Movement) => !!user && m.targetUserId === user.id, [user])
 
   const reload = useCallback(() => {
     movementRepository
@@ -61,11 +77,34 @@ export function LocalesScreen() {
   const setStatus = async (m: Movement, status: SaleStatus) => {
     if (!actor) return
     setBusyId(m.id)
+    setActionError('')
     try {
       await movementRepository.setSaleStatus(m.id, status, actor)
       setMovs((prev) => prev.map((x) => (x.id === m.id ? { ...x, saleStatus: status } : x)))
-    } catch {
-      // Si falla (permisos, conexión), la lista se recarga y muestra la verdad.
+    } catch (e) {
+      // Si falla (permisos, conexión), se avisa y la lista se recarga para mostrar la verdad.
+      setActionError(errorMessage(e))
+      reload()
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  /**
+   * Marca una entrega como pendiente, sin abrir ningún diálogo ni registrar
+   * venta: solo pasa "de Entregas a Pendiente" a la vista. La venta de verdad
+   * se crea después, cuando el encargado toque "Cobrar" (ahí sí con cantidad,
+   * pago y cliente).
+   */
+  const setDeliveryPending = async (m: Movement, pending: boolean) => {
+    if (!actor) return
+    setBusyId(m.id)
+    setActionError('')
+    try {
+      await movementRepository.setDeliveryPending(m.id, pending, actor)
+      setMovs((prev) => prev.map((x) => (x.id === m.id ? { ...x, deliveryPending: pending } : x)))
+    } catch (e) {
+      setActionError(errorMessage(e))
       reload()
     } finally {
       setBusyId(null)
@@ -123,14 +162,49 @@ export function LocalesScreen() {
     }
     return acc
   }, [movs])
+  /**
+   * Cuántos pares de cada entrega ya volvieron a bodega por un retorno del
+   * escáner (Bodega → Retorno). Ese retorno es genérico —no sabe de qué
+   * entrega salió el par, solo de qué referencia y de qué encargado—, así que
+   * se reparte contra sus entregas de más antigua a más nueva (FIFO): la
+   * mercancía que se devuelve es, en la práctica, la que más tiempo lleva ahí.
+   */
+  const returnedByDelivery = useMemo(() => {
+    const acc = new Map<string, number>()
+    const pool = new Map<string, number>()
+    for (const m of movs) {
+      if (m.type !== 'retorno' || !m.targetUserId) continue
+      const key = `${String(m.variantId)}|${m.targetUserId}`
+      pool.set(key, (pool.get(key) ?? 0) + m.quantity)
+    }
+    // `movs` viene de más reciente a más antigua; se recorre al revés para
+    // consumir el pool empezando por la entrega más vieja.
+    const deliveriesChrono = movs.filter((m) => m.type === 'salida').slice().reverse()
+    for (const d of deliveriesChrono) {
+      if (!d.targetUserId) continue
+      const key = `${String(d.variantId)}|${d.targetUserId}`
+      const available = pool.get(key) ?? 0
+      if (available <= 0) continue
+      const take = Math.min(d.quantity, available)
+      acc.set(d.id, take)
+      pool.set(key, available - take)
+    }
+    return acc
+  }, [movs])
+  /** Lo que le queda a la entrega después de descontar lo ya retornado a bodega. */
+  const effectiveQtyOf = useCallback(
+    (m: Movement) => m.quantity - Math.min(m.quantity, Math.max(0, returnedByDelivery.get(m.id) ?? 0)),
+    [returnedByDelivery],
+  )
   const pendingOf = useCallback(
     (m: Movement) => {
-      // Lo vendido se acota al tamaño de la entrega: una devolución no puede
-      // dejar "por cobrar" más pares de los que se entregaron.
-      const sold = Math.min(m.quantity, Math.max(0, soldByDelivery.get(m.id) ?? 0))
-      return m.quantity - sold
+      // Lo vendido se acota al tamaño de la entrega YA NETA de retornos: una
+      // devolución no puede dejar "por cobrar" más pares de los que quedan.
+      const effective = effectiveQtyOf(m)
+      const sold = Math.min(effective, Math.max(0, soldByDelivery.get(m.id) ?? 0))
+      return effective - sold
     },
-    [soldByDelivery],
+    [soldByDelivery, effectiveQtyOf],
   )
 
   /**
@@ -159,6 +233,20 @@ export function LocalesScreen() {
     () => (store ? movs.filter((m) => m.type === 'salida' && m.toLocation === key) : []),
     [movs, key, store],
   )
+  /** Entregas que el encargado marcó pendiente y todavía no se han cobrado del todo. */
+  const pendingDeliveries = useMemo(
+    () => deliveries.filter((m) => m.deliveryPending && pendingOf(m) > 0),
+    [deliveries, pendingOf],
+  )
+  /**
+   * Entregas del tab "Entregas": una vez marcada pendiente, se muda al tab
+   * Pendiente; una vez retornada por completo a bodega, desaparece — ya no
+   * está en el local.
+   */
+  const activeDeliveries = useMemo(
+    () => deliveries.filter((m) => !m.deliveryPending && effectiveQtyOf(m) > 0),
+    [deliveries, effectiveQtyOf],
+  )
 
   const stockRows = useMemo(() => {
     if (!store) return []
@@ -179,6 +267,17 @@ export function LocalesScreen() {
   const netSales = useMemo(() => sales.filter((m) => !isReturned(m)), [sales, isReturned])
   const salesTotal = useMemo(() => netSales.reduce((s, m) => s + m.total, 0), [netSales])
   const salesUnits = useMemo(() => netSales.reduce((s, m) => s + m.quantity, 0), [netSales])
+  /**
+   * Ventas YA registradas (por transportadora, escaneadas) que siguen sin
+   * cobrarse. Las entregas marcadas pendiente desde Entregas NO están acá
+   * todavía: como no generan venta hasta que se cobran, viven en
+   * `pendingDeliveries`.
+   */
+  const pendingSales = useMemo(
+    () => sales.filter((m) => !isReturned(m) && saleStatusOf(m) === 'pendiente'),
+    [sales, isReturned],
+  )
+  const pendingTotal = useMemo(() => pendingSales.reduce((s, m) => s + m.total, 0), [pendingSales])
   /** Desglose por estado de cobro: cuánto entró ya y cuánto está en la calle. */
   const byStatus = useMemo(() => {
     const acc: Record<SaleStatus, { total: number; count: number }> = {
@@ -195,7 +294,10 @@ export function LocalesScreen() {
   }, [sales, isReturned])
   const returnsTotal = useMemo(() => returns.reduce((s, m) => s + m.total, 0), [returns])
   const returnsUnits = useMemo(() => returns.reduce((s, m) => s + m.quantity, 0), [returns])
-  const deliveriesUnits = useMemo(() => deliveries.reduce((s, m) => s + m.quantity, 0), [deliveries])
+  const deliveriesUnits = useMemo(
+    () => activeDeliveries.reduce((s, m) => s + effectiveQtyOf(m), 0),
+    [activeDeliveries, effectiveQtyOf],
+  )
   const stockUnits = useMemo(() => stockRows.reduce((s, r) => s + r.total, 0), [stockRows])
 
   return (
@@ -242,26 +344,111 @@ export function LocalesScreen() {
             })}
           </div>
 
+          <ErrorNote text={actionError} />
+
           {/* Contenido de la sub-pestaña */}
-          {tab === 'vendido' ? (
+          {tab === 'pendiente' ? (
+            <section style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div>
+                <div style={{ font: '700 13px var(--font-body)', color: 'var(--text-secondary)', marginBottom: 8 }}>
+                  Entregas por confirmar · {pendingDeliveries.length}
+                </div>
+                <Card>
+                  {loading ? (
+                    <Empty text="Cargando pendientes…" />
+                  ) : pendingDeliveries.length === 0 ? (
+                    <Empty text="No hay entregas marcadas pendiente en este local." />
+                  ) : (
+                    pendingDeliveries.map((m) => {
+                      const effective = effectiveQtyOf(m)
+                      const pending = pendingOf(m)
+                      const sold = effective - pending
+                      return (
+                        <MovRow
+                          key={m.id}
+                          title={`${m.snapshot.productName} · T${m.snapshot.size}`}
+                          sub={deliverySub(m, stores, bodegas)}
+                          qty={`+${effective}`}
+                          qtyColor="var(--color-success)"
+                          onOpen={() => setDetail(m)}
+                          badge={
+                            sold > 0 ? (
+                              <span style={{ font: '700 10.5px var(--font-body)', padding: '3px 9px', borderRadius: 'var(--radius-pill)', background: SALE_STATUS_TONE.cobrado.chip, color: SALE_STATUS_TONE.cobrado.text, whiteSpace: 'nowrap' }}>
+                                vendido {sold} de {effective}
+                              </span>
+                            ) : undefined
+                          }
+                          actions={
+                            actor && isMine(m) ? (
+                              <>
+                                <Button variant="success" size="sm" onClick={() => setCharging(m)}>
+                                  Cobrar{pending < m.quantity ? ` ${pending}` : ''}
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={busyId === m.id}
+                                  onClick={() => void setDeliveryPending(m, false)}
+                                >
+                                  Retornar a Entregas
+                                </Button>
+                              </>
+                            ) : null
+                          }
+                        />
+                      )
+                    })
+                  )}
+                </Card>
+              </div>
+
+              <div>
+                <SummaryBar
+                  label={`${pendingSales.length} ${pendingSales.length === 1 ? 'venta' : 'ventas'} sin cobrar`}
+                  value={<Money value={pendingTotal} />}
+                />
+                <Card>
+                  {loading ? (
+                    <Empty text="Cargando pendientes…" />
+                  ) : pendingSales.length === 0 ? (
+                    <Empty text="No hay ventas pendientes por cobrar en este local." />
+                  ) : (
+                    pendingSales.map((m) => (
+                      <SaleRow
+                        key={m.id}
+                        movement={m}
+                        returned={false}
+                        busy={busyId === m.id}
+                        canAct={actor !== null}
+                        onStatus={(status) => void setStatus(m, status)}
+                        onReturnToBodega={() => setReturning(m)}
+                        onOpen={() => setDetail(m)}
+                      />
+                    ))
+                  )}
+                </Card>
+              </div>
+            </section>
+          ) : tab === 'vendido' ? (
             <section style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               <SummaryBar label={`${netSales.length} ${netSales.length === 1 ? 'venta' : 'ventas'} · ${salesUnits} pares`} value={<Money value={salesTotal} />} />
               <StatusBreakdown byStatus={byStatus} />
               <Card>
                 {loading ? (
                   <Empty text="Cargando ventas…" />
-                ) : sales.length === 0 ? (
+                ) : netSales.length === 0 ? (
                   <Empty text="Este local todavía no tiene ventas registradas." />
                 ) : (
-                  sales.map((m) => (
+                  netSales.map((m) => (
                     <SaleRow
                       key={m.id}
                       movement={m}
-                      returned={isReturned(m)}
+                      returned={false}
                       busy={busyId === m.id}
                       canAct={actor !== null}
                       onStatus={(status) => void setStatus(m, status)}
                       onReturnToBodega={() => setReturning(m)}
+                      onOpen={() => setDetail(m)}
                     />
                   ))
                 )}
@@ -284,6 +471,7 @@ export function LocalesScreen() {
                       qty={`+${m.quantity}`}
                       qtyColor="var(--color-success)"
                       value={<Money value={m.total} />}
+                      onOpen={() => setDetail(m)}
                     />
                   ))
                 )}
@@ -320,35 +508,47 @@ export function LocalesScreen() {
             </section>
           ) : (
             <section style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <SummaryBar label={`${deliveries.length} ${deliveries.length === 1 ? 'entrega' : 'entregas'}`} value={`${deliveriesUnits} pares`} />
+              <SummaryBar label={`${activeDeliveries.length} ${activeDeliveries.length === 1 ? 'entrega' : 'entregas'}`} value={`${deliveriesUnits} pares`} />
               <Card>
                 {loading ? (
                   <Empty text="Cargando entregas…" />
-                ) : deliveries.length === 0 ? (
+                ) : activeDeliveries.length === 0 ? (
                   <Empty text="Todavía no hay entregas registradas a este local." />
                 ) : (
-                  deliveries.map((m) => {
+                  activeDeliveries.map((m) => {
+                    const effective = effectiveQtyOf(m)
                     const pending = pendingOf(m)
-                    const sold = m.quantity - pending
+                    const sold = effective - pending
                     return (
                       <MovRow
                         key={m.id}
                         title={`${m.snapshot.productName} · T${m.snapshot.size}`}
                         sub={deliverySub(m, stores, bodegas)}
-                        qty={`+${m.quantity}`}
+                        qty={`+${effective}`}
                         qtyColor="var(--color-success)"
+                        onOpen={() => setDetail(m)}
                         badge={
                           sold > 0 ? (
                             <span style={{ font: '700 10.5px var(--font-body)', padding: '3px 9px', borderRadius: 'var(--radius-pill)', background: SALE_STATUS_TONE.cobrado.chip, color: SALE_STATUS_TONE.cobrado.text, whiteSpace: 'nowrap' }}>
-                              vendido {sold} de {m.quantity}
+                              vendido {sold} de {effective}
                             </span>
                           ) : undefined
                         }
                         actions={
-                          actor && pending > 0 ? (
-                            <Button variant="success" size="sm" onClick={() => setCharging(m)}>
-                              Cobrar{pending < m.quantity ? ` ${pending}` : ''}
-                            </Button>
+                          actor && pending > 0 && isMine(m) ? (
+                            <>
+                              <Button variant="success" size="sm" onClick={() => setCharging(m)}>
+                                Cobrar{pending < m.quantity ? ` ${pending}` : ''}
+                              </Button>
+                              <Button
+                                variant="accent"
+                                size="sm"
+                                disabled={busyId === m.id}
+                                onClick={() => void setDeliveryPending(m, true)}
+                              >
+                                Pendiente{pending < m.quantity ? ` ${pending}` : ''}
+                              </Button>
+                            </>
                           ) : null
                         }
                       />
@@ -356,7 +556,9 @@ export function LocalesScreen() {
                   })
                 )}
               </Card>
-              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Muestra las entregas más recientes.</span>
+              <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                Muestra las entregas más recientes. Solo el encargado de cada una (a quien se le entregó) puede cobrarla o marcarla pendiente. Al marcarla pendiente se muda al tab Pendiente.
+              </span>
             </section>
           )}
         </>
@@ -389,21 +591,26 @@ export function LocalesScreen() {
           }}
         />
       ) : null}
+
+      {detail ? (
+        <MovementDetailModal movement={detail} stores={stores} bodegas={bodegas} onClose={() => setDetail(null)} />
+      ) : null}
     </div>
   )
 }
 
 // ── Cobro de las ventas por transportadora ───────────────────────────────────
 
-/** Cuánto de lo vendido ya entró y cuánto sigue en la calle. */
+/**
+ * Cuánto de lo vendido ya entró y cuánto sigue en la calle. Lo devuelto no
+ * entra aquí: esas ventas ya no aparecen en Vendido, viven en su propio tab.
+ */
 function StatusBreakdown({
   byStatus,
 }: {
   byStatus: Record<SaleStatus, { total: number; count: number }>
 }) {
-  const shown = (['cobrado', 'pendiente', 'devuelto'] as SaleStatus[]).filter(
-    (s) => byStatus[s].count > 0,
-  )
+  const shown = (['cobrado', 'pendiente'] as SaleStatus[]).filter((s) => byStatus[s].count > 0)
   if (shown.length < 2) return null // con un solo estado el desglose no aporta
   return (
     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -445,6 +652,7 @@ function SaleRow({
   canAct,
   onStatus,
   onReturnToBodega,
+  onOpen,
 }: {
   movement: Movement
   /** Ya tiene su devolución escrita en el libro mayor. */
@@ -453,6 +661,8 @@ function SaleRow({
   canAct: boolean
   onStatus: (status: SaleStatus) => void
   onReturnToBodega: () => void
+  /** Abre la tarjeta de detalle completo (sin recortar) de esta línea. */
+  onOpen?: () => void
 }) {
   const status = returned ? 'devuelto' : saleStatusOf(m)
   return (
@@ -466,6 +676,7 @@ function SaleRow({
       badge={<SaleStatusChip status={status} />}
       dim={busy}
       highlight={status === 'pendiente'}
+      onOpen={onOpen}
       actions={
         canAct && status !== 'devuelto' ? (
           <>
@@ -495,10 +706,10 @@ function SaleRow({
  *
  * En temporada no hay tiempo de cobrar par por par: se despacha la mercancía
  * desde bodega y más tarde, con calma, se confirma qué de lo entregado se
- * vendió. Registra una venta de verdad —descuenta el stock del local que
- * recibió y la plata entra al día— amarrada a la entrega, para que la fila
- * sepa cuánto le falta por vender. Pide los mismos datos que el cobro normal,
- * así que vender por transportadora desde aquí también nace "pendiente".
+ * vendió. Registra una venta de verdad, ya COBRADA —descuenta el stock del
+ * local que recibió y la plata entra al día— amarrada a la entrega, para que
+ * la fila sepa cuánto le falta por vender. Solo el ENCARGADO de la entrega
+ * llega hasta aquí (Entregas y Pendiente ocultan el botón a los demás).
  */
 function CobrarEntregaModal({
   delivery,
@@ -545,6 +756,7 @@ function CobrarEntregaModal({
         { ...actor, storeId: localId as MovementActor['storeId'] },
         {
           payment,
+          statusOverride: 'cobrado',
           ...(customerName ? { customerName } : {}),
           ...(customerPhone ? { customerPhone } : {}),
         },
@@ -696,6 +908,87 @@ function deliverySub(m: Movement, stores: Store[], bodegas: Bodega[]): string {
     .join(' · ')
 }
 
+/**
+ * Tarjeta con el detalle completo de un movimiento, sin recortar nada. La fila
+ * en pantalla angosta corta el subtítulo (bodega, encargado, etc.); esta
+ * tarjeta es donde se ve todo, tocando la fila.
+ */
+function MovementDetailModal({
+  movement: m,
+  stores,
+  bodegas,
+  onClose,
+}: {
+  movement: Movement
+  stores: Store[]
+  bodegas: Bodega[]
+  onClose: () => void
+}) {
+  const place = movementPlace(m, stores, bodegas)
+  const status: SaleStatus | null = m.type === 'sale' ? saleStatusOf(m) : null
+  return (
+    <Overlay onClose={onClose} width={420}>
+      <ModalHeader title={`${m.snapshot.productName} · T${m.snapshot.size}`} onClose={onClose} />
+      <div style={{ marginTop: 6 }}>
+        <DetailRow label="SKU" value={m.snapshot.sku} />
+        <DetailRow label="Código de barras" value={m.snapshot.barcode} />
+        <DetailRow label="Cantidad" value={`${m.quantity} ${m.quantity === 1 ? 'par' : 'pares'}`} />
+        <DetailRow label="Valor" value={<Money value={m.total} />} />
+        <DetailRow label="Fecha" value={`${formatShortDate(m.occurredAt)} · ${formatTime(m.occurredAt)}`} />
+        {status ? <DetailRow label="Estado de cobro" value={<SaleStatusChip status={status} />} /> : null}
+        {m.type === 'sale' ? (
+          <>
+            <DetailRow label="Método de pago" value={m.payment} />
+            <DetailRow label="Cliente" value={m.customerName} />
+            <DetailRow label="Teléfono" value={m.customerPhone} />
+            <DetailRow label="Registrada por" value={m.userName} />
+          </>
+        ) : null}
+        {m.type === 'salida' ? (
+          <>
+            <DetailRow label="Desde bodega" value={place.bodega} />
+            <DetailRow label="Encargado" value={m.targetUserName} />
+            <DetailRow label="Despachada por" value={m.userName} />
+            {m.deliveryPending ? (
+              <DetailRow
+                label="Marcada pendiente"
+                value={[m.deliveryPendingBy, m.deliveryPendingAt ? formatShortDate(m.deliveryPendingAt) : '']
+                  .filter(Boolean)
+                  .join(' · ')}
+              />
+            ) : null}
+          </>
+        ) : null}
+        {m.type === 'return' ? (
+          <>
+            <DetailRow label="Razón" value={m.returnReason} />
+            <DetailRow label="Registrada por" value={m.userName} />
+          </>
+        ) : null}
+      </div>
+    </Overlay>
+  )
+}
+
+function DetailRow({ label, value }: { label: string; value: React.ReactNode }) {
+  if (value === undefined || value === null || value === '') return null
+  return (
+    <div
+      style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        gap: 12,
+        padding: '10px 0',
+        borderBottom: '1px solid var(--border-subtle)',
+      }}
+    >
+      <span style={{ fontSize: 12, color: 'var(--text-muted)', fontWeight: 700 }}>{label}</span>
+      <span style={{ fontSize: 13.5, color: 'var(--text-primary)', fontWeight: 700, textAlign: 'right' }}>{value}</span>
+    </div>
+  )
+}
+
 function Card({ children }: { children: React.ReactNode }) {
   return (
     <div style={{ background: 'var(--surface-card)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-lg)', boxShadow: 'var(--shadow-sm)', overflow: 'hidden' }}>
@@ -728,6 +1021,7 @@ function MovRow({
   actions,
   dim,
   highlight,
+  onOpen,
 }: {
   title: string
   sub: string
@@ -738,6 +1032,8 @@ function MovRow({
   actions?: React.ReactNode
   dim?: boolean
   highlight?: boolean
+  /** Si se pasa, la fila se puede tocar/clicar para ver el detalle completo. */
+  onOpen?: (() => void) | undefined
 }) {
   return (
     <div
@@ -752,7 +1048,11 @@ function MovRow({
         background: highlight ? 'rgba(255,209,0,.06)' : undefined,
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+      <div
+        onClick={onOpen}
+        role={onOpen ? 'button' : undefined}
+        style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: onOpen ? 'pointer' : undefined }}
+      >
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ font: '700 14px var(--font-body)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{title}</div>
           <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{sub}</div>
@@ -760,6 +1060,7 @@ function MovRow({
         {badge}
         <span style={{ font: '700 15px var(--font-display)', color: qtyColor ?? 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{qty}</span>
         {value ? <span style={{ font: '700 15px var(--font-display)', whiteSpace: 'nowrap', minWidth: 72, textAlign: 'right' }}>{value}</span> : null}
+        {onOpen ? <span style={{ color: 'var(--text-muted)', fontSize: 18, lineHeight: 1 }}>›</span> : null}
       </div>
       {actions ? <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>{actions}</div> : null}
     </div>

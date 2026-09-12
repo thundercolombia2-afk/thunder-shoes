@@ -185,6 +185,10 @@ export const movementFromDoc = (snap: QueryDocumentSnapshot<DocumentData>): Move
   if (d.saleStatusAt) movement.saleStatusAt = toDate(d.saleStatusAt)
   if (d.saleStatusBy) movement.saleStatusBy = String(d.saleStatusBy)
   if (d.saleStatusByUid) movement.saleStatusByUid = String(d.saleStatusByUid) as UserId
+  if (typeof d.deliveryPending === 'boolean') movement.deliveryPending = d.deliveryPending
+  if (d.deliveryPendingAt) movement.deliveryPendingAt = toDate(d.deliveryPendingAt)
+  if (d.deliveryPendingBy) movement.deliveryPendingBy = String(d.deliveryPendingBy)
+  if (d.deliveryPendingByUid) movement.deliveryPendingByUid = String(d.deliveryPendingByUid) as UserId
   return movement
 }
 
