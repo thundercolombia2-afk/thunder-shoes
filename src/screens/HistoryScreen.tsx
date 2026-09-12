@@ -23,7 +23,7 @@ import { matchesMovement } from '@/domain/sales'
 import { MOVEMENT_TYPES, type Movement, type MovementType } from '@/domain/models'
 import { formatMoney, formatShortDate, recentDayKeys, toDayKey } from '@/lib/format'
 import { downloadCsv, toCsv } from '@/lib/csv'
-import { movementPlace, RoleBadge, SaleStatusChip, type MovementPlace } from './_shared'
+import { bodegaLabel, movementPlace, RoleBadge, SaleStatusChip, type MovementPlace } from './_shared'
 import { SearchBox } from './InventoryScreen'
 import { Icon } from '@/ui/Icon'
 
@@ -135,7 +135,7 @@ export function HistoryScreen() {
           m.snapshot.size,
           m.quantity,
           place.store,
-          place.bodega,
+          bodegaLabel(place),
           m.userName,
           place.person,
           m.customerName ?? '',
@@ -426,8 +426,8 @@ function HistoryRow({
           {place.store || '—'}
         </span>
         {place.bodega ? (
-          <span style={{ display: 'block', fontSize: 10.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={place.bodega}>
-            {place.bodega}
+          <span style={{ display: 'block', fontSize: 10.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={bodegaLabel(place)}>
+            {bodegaLabel(place)}
           </span>
         ) : null}
       </span>

@@ -6,6 +6,7 @@ import { useSession } from '@/app/session'
 import { Icon } from '@/ui/Icon'
 import type { Bodega, Movement, SaleStatus, Store, VariantWithProduct } from '@/domain/models'
 import { ROLE_LABEL, type Role } from '@/domain/users'
+import { parseLocationKey } from '@/domain/locations'
 import {
   movementBodegaId,
   movementStoreId,
@@ -240,9 +241,19 @@ export interface MovementPlace {
   store: string
   /** Bodega involucrada: "Bodega 1". Vacía si no toca ninguna. */
   bodega: string
+  /**
+   * Bodega de DESTINO, solo cuando el movimiento va de una bodega a otra (un
+   * traslado). En ese caso `bodega` es el origen. Vacía en todo lo demás, que
+   * toca una sola bodega.
+   */
+  bodegaTo: string
   /** Persona que recibió (salida) o de la que volvió (retorno) el par. */
   person: string
 }
+
+/** La bodega del movimiento para mostrar: "Bodega 1" o "Bodega 1 → Bodega 2". */
+export const bodegaLabel = (place: MovementPlace): string =>
+  place.bodegaTo ? `${place.bodega} → ${place.bodegaTo}` : place.bodega
 
 /** Código visible de un local ("163") a partir de su id. */
 export const storeCodeOf = (stores: Store[], storeId: string): string =>
@@ -251,9 +262,16 @@ export const storeCodeOf = (stores: Store[], storeId: string): string =>
 export function movementPlace(m: Movement, stores: Store[], bodegas: Bodega[]): MovementPlace {
   const storeId = movementStoreId(m)
   const bodegaId = movementBodegaId(m)
+  const codeOf = (id: string) => bodegas.find((b) => b.id === id)?.code ?? 'Bodega'
+  // `movementBodegaId` devuelve la PRIMERA bodega que encuentra (origen, o
+  // destino si no hay origen). En un traslado los dos extremos son bodegas, y
+  // quedarse con el origen dejaba la fila a medias: no se veía a dónde fue.
+  const toRef = m.toLocation ? parseLocationKey(m.toLocation) : null
+  const toBodegaId = toRef?.kind === 'bodega' && toRef.id !== bodegaId ? toRef.id : null
   return {
     store: storeId ? storeCodeOf(stores, storeId) : '',
-    bodega: bodegaId ? (bodegas.find((b) => b.id === bodegaId)?.code ?? 'Bodega') : '',
+    bodega: bodegaId ? codeOf(bodegaId) : '',
+    bodegaTo: toBodegaId ? codeOf(toBodegaId) : '',
     person: m.targetUserName ?? '',
   }
 }
