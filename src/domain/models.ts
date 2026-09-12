@@ -25,10 +25,20 @@ export const addMoney = (a: Money, b: Money): Money => money(a + b)
 export const mulMoney = (a: Money, qty: number): Money => money(a * qty)
 export const subMoney = (a: Money, b: Money): Money => money(a - b)
 
-/** Tallas soportadas. Fuente única de verdad para toda la app. */
+/**
+ * Tallas soportadas. Fuente única de verdad para toda la app.
+ *
+ * `SIZES` son las de adulto: las maneja casi cualquier referencia, así que se
+ * ofrecen de entrada. `EXTRA_SIZES` son las pequeñas —existen, pero solo unas
+ * pocas referencias las tienen—, y por eso se agregan a mano desde el formulario
+ * en vez de llenar la pantalla de tallas que nadie va a surtir.
+ */
 export const SIZES = [36, 37, 38, 39, 40, 41, 42, 43, 44, 45] as const
-export type Size = (typeof SIZES)[number]
-export const isSize = (n: number): n is Size => (SIZES as readonly number[]).includes(n)
+export const EXTRA_SIZES = [30, 31, 32, 33, 34, 35] as const
+/** Todas las tallas válidas, en orden ascendente. */
+export const ALL_SIZES = [...EXTRA_SIZES, ...SIZES] as const
+export type Size = (typeof ALL_SIZES)[number]
+export const isSize = (n: number): n is Size => (ALL_SIZES as readonly number[]).includes(n)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Local / tienda
@@ -131,12 +141,14 @@ export interface VariantWithProduct {
  *  · return   — devolución de un cliente: regresa stock al local.
  *  · salida   — traslado bodega → local (se destina a un usuario/su local).
  *  · retorno  — traslado local → bodega.
+ *  · traslado — traslado bodega → bodega: corregir en qué bodega está guardada
+ *               la mercancía. No sale a la calle ni cambia el total.
  *  · baja     — dar de baja: saca stock del sistema sin venderlo (dañado,
  *               perdido, robo, ajuste, prueba). Solo la dueña. Queda registrado.
- * `salida` y `retorno` son TRASLADOS: mueven stock entre dos ubicaciones sin
- * cambiar el total del sistema.
+ * `salida`, `retorno` y `traslado` son TRASLADOS: mueven stock entre dos
+ * ubicaciones sin cambiar el total del sistema.
  */
-export const MOVEMENT_TYPES = ['sale', 'purchase', 'return', 'salida', 'retorno', 'baja'] as const
+export const MOVEMENT_TYPES = ['sale', 'purchase', 'return', 'salida', 'retorno', 'traslado', 'baja'] as const
 export type MovementType = (typeof MOVEMENT_TYPES)[number]
 
 /** Motivos de una baja de inventario. */
@@ -152,7 +164,7 @@ export const BAJA_REASONS = [
 export type BajaReason = (typeof BAJA_REASONS)[number]
 
 /** Traslados: afectan dos ubicaciones (from −, to +). */
-export const TRANSFER_TYPES = ['salida', 'retorno'] as const
+export const TRANSFER_TYPES = ['salida', 'retorno', 'traslado'] as const
 export const isTransfer = (type: MovementType): boolean =>
   (TRANSFER_TYPES as readonly string[]).includes(type)
 

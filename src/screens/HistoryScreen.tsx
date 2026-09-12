@@ -39,6 +39,7 @@ const TONE: Record<MovementType, string> = {
   return: 'var(--color-danger)',
   salida: 'var(--iw-amber)',
   retorno: 'var(--color-success)',
+  traslado: 'var(--iw-plum)',
   baja: 'var(--color-danger)',
 }
 

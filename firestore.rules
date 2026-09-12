@@ -238,7 +238,7 @@ service cloud.firestore {
     }
 
     function isValidMovement(m) {
-      return m.type in ['sale', 'purchase', 'return', 'salida', 'retorno', 'baja']
+      return m.type in ['sale', 'purchase', 'return', 'salida', 'retorno', 'traslado', 'baja']
         && m.quantity is int && m.quantity >= 1
         && m.productId is string
         && m.variantId is string

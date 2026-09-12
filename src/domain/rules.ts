@@ -95,6 +95,7 @@ export const stockDeltaFor = (type: MovementType, quantity: number): number => {
       return quantity
     case 'salida':
     case 'retorno':
+    case 'traslado':
       return 0
   }
 }
@@ -117,6 +118,7 @@ export function locationDeltas(
       break
     case 'salida':
     case 'retorno':
+    case 'traslado':
       if (draft.fromLocation) out.push({ key: draft.fromLocation, delta: -q })
       if (draft.toLocation) out.push({ key: draft.toLocation, delta: q })
       break
@@ -201,6 +203,7 @@ export function calculateMovement(
     draft.type === 'purchase' ||
     draft.type === 'salida' ||
     draft.type === 'retorno' ||
+    draft.type === 'traslado' ||
     draft.type === 'baja'
       ? mulMoney(unitCost, draft.quantity)
       : mulMoney(unitPrice, draft.quantity)
@@ -295,6 +298,7 @@ export const MOVEMENT_LABEL: Record<MovementType, string> = {
   return: 'Devolución',
   salida: 'Salida a local',
   retorno: 'Retorno a bodega',
+  traslado: 'Traslado entre bodegas',
   baja: 'Baja',
 }
 
