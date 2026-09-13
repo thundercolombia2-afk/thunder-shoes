@@ -5,7 +5,7 @@
  * cajera confirma con el cliente enfrente y vuelve al mismo estado si cancela.
  */
 
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   PAYMENT_METHODS,
   RETURN_REASONS,
@@ -17,7 +17,9 @@ import {
 } from '@/domain/models'
 import type { Sale } from '@/domain/sales'
 import { movementRepository } from '@/data/repositories/movementRepository'
-import type { ProductWithVariants } from '@/data/repositories/catalogRepository'
+import type { ProductRow } from '@/data/repositories/catalogRepository'
+import { useVariantsWithStock } from '@/app/hooks'
+import { stockAt } from '@/domain/locations'
 import { formatMoney, formatMoneyInput, formatShortDate, formatTime, parseMoneyInput } from '@/lib/format'
 import type { CartLine } from '@/app/cart'
 
@@ -401,7 +403,7 @@ export function CobroModal({
 export function DevolucionModal({
   fallback,
   catalog,
-  localStockOf,
+  localKey,
   busy,
   error,
   onClose,
@@ -409,10 +411,10 @@ export function DevolucionModal({
   onExchange,
 }: {
   fallback: CartLine | null
-  /** Catálogo en vivo, para elegir el par de cambio. */
-  catalog: ProductWithVariants[]
-  /** Stock de una variante en el local actual (tope del par de cambio). */
-  localStockOf: (variantId: string) => number
+  /** Referencias en vivo, para elegir el par de cambio. */
+  catalog: ProductRow[]
+  /** Ubicación del local actual ("s:163"): el tope del par de cambio sale de ahí. */
+  localKey: string | null
   busy: boolean
   error: string
   onClose: () => void
@@ -506,25 +508,36 @@ export function DevolucionModal({
   const units = selectedLines.reduce((sum, l) => sum + (quantities[String(l.variantId)] ?? 0), 0)
   const chosen = sale !== null || loose
 
-  // Candidatos para el par de cambio: variantes con stock en el local actual.
+  // Candidatos para el par de cambio: variantes con stock en el local actual. Las
+  // tallas ya no vienen en el catálogo (que solo trae referencias), así que salen
+  // de la suscripción a tallas con stock: una talla con stock en el local tiene
+  // por definición `stock > 0`, así que los candidatos son los mismos que antes.
+  // Esta suscripción solo existe mientras el diálogo está abierto.
+  const { variants: variantsWithStock } = useVariantsWithStock()
+  const productById = useMemo(
+    () => new Map(catalog.map((r) => [String(r.product.id), r.product])),
+    [catalog],
+  )
+  const localStockOf = (variant: (typeof variantsWithStock)[number]): number =>
+    localKey ? stockAt(variant.stockByLocation, localKey) : 0
+
   const replCandidates = (() => {
     const t = replTerm.trim().toLowerCase()
     const out: { variantId: VariantId; name: string; sku: string; size: number; price: number; stock: number }[] = []
-    for (const r of catalog) {
-      if (t && !r.product.name.toLowerCase().includes(t) && !r.product.sku.toLowerCase().includes(t)) continue
-      for (const v of r.variants) {
-        const stock = localStockOf(String(v.id))
-        if (stock > 0) out.push({ variantId: v.id, name: r.product.name, sku: r.product.sku, size: v.size, price: r.product.price, stock })
-      }
+    for (const v of variantsWithStock) {
+      const product = productById.get(String(v.productId))
+      if (!product) continue
+      if (t && !product.name.toLowerCase().includes(t) && !product.sku.toLowerCase().includes(t)) continue
+      const stock = localStockOf(v)
+      if (stock > 0) out.push({ variantId: v.id, name: product.name, sku: product.sku, size: v.size, price: product.price, stock })
     }
     return out.slice(0, 8)
   })()
   const repl = (() => {
-    for (const r of catalog) {
-      const v = r.variants.find((x) => x.id === replVariantId)
-      if (v) return { variantId: v.id, name: r.product.name, size: v.size, price: r.product.price, stock: localStockOf(String(v.id)) }
-    }
-    return null
+    const v = variantsWithStock.find((x) => x.id === replVariantId)
+    const product = v ? productById.get(String(v.productId)) : undefined
+    if (!v || !product) return null
+    return { variantId: v.id, name: product.name, size: v.size, price: product.price, stock: localStockOf(v) }
   })()
   const replValue = repl ? repl.price * replQty : 0
   const difference = replValue - total // ≥ 0 exigido: el cambio nunca devuelve plata

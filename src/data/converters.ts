@@ -84,6 +84,12 @@ export const productFromDoc = (snap: QueryDocumentSnapshot<DocumentData>): Produ
     active: d.active !== false,
     createdAt: toDate(d.createdAt),
     updatedAt: toDate(d.updatedAt),
+    // Resumen de stock: se expone SOLO si el documento lo trae. Un `?? 0` aquí
+    // convertiría "sin rellenar" en "cero pares" y la lista mentiría.
+    ...(typeof d.stock === 'number' ? { stock: Number(d.stock) } : {}),
+    ...(d.stockByLocation !== undefined && d.stockByLocation !== null
+      ? { stockByLocation: toStockByLocation(d.stockByLocation) }
+      : {}),
   }
 }
 
@@ -97,6 +103,11 @@ export const productToDoc = (product: Omit<Product, 'id'>): DocumentData => ({
   active: product.active,
   createdAt: Timestamp.fromDate(product.createdAt),
   updatedAt: Timestamp.fromDate(product.updatedAt),
+  // Arranca el resumen en cero: una referencia recién creada no tiene stock
+  // todavía (las tallas nacen en 0 y el stock entra por un movimiento). Así
+  // ningún producto nuevo queda sin los campos y el relleno no tiene que volver.
+  stock: product.stock ?? 0,
+  stockByLocation: product.stockByLocation ?? {},
 })
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -6,7 +6,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useBodegas, useCatalog, useStores } from '@/app/hooks'
+import { useBodegas, useCatalog, useProductVariants, useStores, useVariantsWithStock } from '@/app/hooks'
 import { useSession } from '@/app/session'
 import {
   money,
@@ -25,10 +25,12 @@ import { configRepository } from '@/data/repositories/configRepository'
 import { formatMoney, formatMoneyInput, parseMoneyInput } from '@/lib/format'
 import { InventoryLayout, cellColor, statusStyles } from './_shared'
 import { Icon } from '@/ui/Icon'
-import type { EditProductInput, ProductWithVariants } from '@/data/repositories/catalogRepository'
+import type { EditProductInput, ProductRow, ProductWithVariants } from '@/data/repositories/catalogRepository'
 
 export function InventoryScreen() {
   const { data: catalog, loading, error } = useCatalog()
+  // Tallas con stock de todo el catálogo: solo alimentan la casilla "Stock bajo".
+  const { variants: variantsWithStock } = useVariantsWithStock()
   const { data: stores } = useStores()
   const { can, store, user, actor } = useSession()
   const seeCosts = can('seeCosts')
@@ -54,10 +56,8 @@ export function InventoryScreen() {
   const scopeKey = localFirst && store ? storeKey(store.id) : null
 
   // Stock relevante de una referencia según el alcance activo (local vs sistema).
-  const scopeStockOf = (r: ProductWithVariants): number =>
-    scopeKey
-      ? r.variants.reduce((sum, v) => sum + stockAt(v.stockByLocation, scopeKey), 0)
-      : r.totalStock
+  const scopeStockOf = (r: ProductRow): number =>
+    scopeKey ? stockAt(r.stockByLocation, scopeKey) : r.totalStock
 
   // Traduce una clave de ubicación ("s:163" / "b:abc") a un nombre legible.
   const locName = useMemo(
@@ -96,7 +96,7 @@ export function InventoryScreen() {
     // Orden por DISPONIBILIDAD: primero lo que se puede vender aquí, luego lo que
     // hay en otra ubicación (vendible con un traslado) y al fondo lo agotado en
     // todo el sistema. Dentro de cada grupo, alfabético para encontrarlo rápido.
-    const rank = (r: ProductWithVariants): number => {
+    const rank = (r: ProductRow): number => {
       const here = scopeStockOf(r)
       if (here > 0) return 0
       if (r.totalStock > 0) return 1
@@ -115,17 +115,16 @@ export function InventoryScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [catalog, scopeKey],
   )
+  // Misma cuenta de siempre (tallas por debajo de su mínimo), pero sobre las
+  // tallas CON STOCK: la lista ya no trae las variantes del catálogo. Una talla
+  // agotada en todo el sistema deja de sumar aquí; sigue viéndose en la lista,
+  // que agrupa al fondo lo agotado (ver `rank`).
   const alertCount = useMemo(
     () =>
-      catalog.reduce(
-        (sum, r) =>
-          sum +
-          r.variants.filter(
-            (v) => (scopeKey ? stockAt(v.stockByLocation, scopeKey) : v.stock) <= v.minStock,
-          ).length,
-        0,
-      ),
-    [catalog, scopeKey],
+      variantsWithStock.filter(
+        (v) => (scopeKey ? stockAt(v.stockByLocation, scopeKey) : v.stock) <= v.minStock,
+      ).length,
+    [variantsWithStock, scopeKey],
   )
 
   return (
@@ -213,7 +212,7 @@ export function InventoryScreen() {
 }
 
 /** Fila del inventario: solo el nombre (con una pista de estado) y clickable. */
-function ListRow({ row, scopeStock, onOpen }: { row: ProductWithVariants; scopeStock: number; onOpen: () => void }) {
+function ListRow({ row, scopeStock, onOpen }: { row: ProductRow; scopeStock: number; onOpen: () => void }) {
   const st = productStatus(scopeStock, row.product.minStock)
   const dot = st === 'out' ? 'var(--color-danger)' : st === 'low' ? 'var(--iw-amber)' : 'var(--color-success)'
   return (
@@ -256,7 +255,7 @@ function ProductModal({
   onDelete,
   onClose,
 }: {
-  row: ProductWithVariants
+  row: ProductRow
   /**
    * Solo socios (la dueña es socia). Manda sobre todo lo administrativo de este
    * modal: ver el costo, editar/eliminar la referencia y ajustar las cantidades
@@ -275,7 +274,13 @@ function ProductModal({
   onDelete: (productId: ProductId) => Promise<void>
   onClose: () => void
 }) {
-  const { product, variants, totalStock } = row
+  const { product, totalStock } = row
+  // Las tallas ya no vienen en la fila de la lista: se cargan al ABRIR el detalle
+  // (~9 lecturas) y llegan TODAS, incluidas las agotadas, que es lo que hace
+  // falta para reponerlas, darlas de baja o ver su código impreso.
+  const { variants, loading: variantsLoading } = useProductVariants(product.id)
+  // Los diálogos anidados siguen recibiendo la forma completa que ya esperaban.
+  const rowWithVariants: ProductWithVariants = { product, variants, totalStock }
   const [editing, setEditing] = useState(false)
   const [editForm, setEditForm] = useState(false)
   // Edición de cantidades por talla. El stock vive POR UBICACIÓN, así que se
@@ -544,7 +549,9 @@ function ProductModal({
           </label>
         ) : null}
         <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginTop: 8 }}>
-          {variants.length === 0 ? (
+          {variantsLoading ? (
+            <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>Cargando tallas…</span>
+          ) : variants.length === 0 ? (
             <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>Esta referencia no tiene tallas.</span>
           ) : (
             variants.map((variant) => {
@@ -675,7 +682,7 @@ function ProductModal({
 
       {bajaMode !== 'none' ? (
         <BajaDialog
-          row={row}
+          row={rowWithVariants}
           actor={actor}
           forDelete={bajaMode === 'delete'}
           onClose={() => setBajaMode('none')}
@@ -685,7 +692,7 @@ function ProductModal({
       ) : null}
 
       {moving ? (
-        <TrasladoDialog row={row} actor={actor} bodegas={bodegaOptions} onClose={() => setMoving(false)} />
+        <TrasladoDialog row={rowWithVariants} actor={actor} bodegas={bodegaOptions} onClose={() => setMoving(false)} />
       ) : null}
     </div>
   )

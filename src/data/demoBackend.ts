@@ -43,7 +43,7 @@ import {
 import type { Invite, Role, UserProfile } from '@/domain/users'
 import { bodegaKey, storeKey } from '@/domain/locations'
 import { recentDayKeys, toDayKey } from '@/lib/format'
-import type { EditProductInput, NewProductInput, ProductWithVariants } from './repositories/catalogRepository'
+import type { EditProductInput, NewProductInput, ProductRow } from './repositories/catalogRepository'
 import { groupSales, matchesCustomer, type Sale } from '@/domain/sales'
 import type { MovementActor } from './repositories/movementRepository'
 
@@ -297,21 +297,42 @@ const notifyExpenses = () => expenseListeners.forEach((l) => l([...expenses]))
 const config = { entryPassword: '1234', authPin: '1234' }
 
 // ── Pub/sub del catálogo ─────────────────────────────────────────────────────
-type CatalogListener = (catalog: ProductWithVariants[]) => void
+type CatalogListener = (catalog: ProductRow[]) => void
 const listeners = new Set<CatalogListener>()
+// Espejo de las suscripciones de Firestore: la LISTA no lleva tallas, y quien
+// las necesita se suscribe aparte (por referencia, o todas las que tienen stock).
+type VariantsListener = (variants: Variant[]) => void
+const productVariantListeners = new Set<{ productId: ProductId; cb: VariantsListener }>()
+const stockVariantListeners = new Set<VariantsListener>()
 
-function buildCatalog(): ProductWithVariants[] {
+function buildCatalog(): ProductRow[] {
   return products
     .filter((p) => p.active)
     .map((product) => {
-      const vs = variants.filter((v) => v.productId === product.id).sort((a, b) => a.size - b.size)
-      return { product, variants: vs, totalStock: vs.reduce((sum, v) => sum + v.stock, 0) }
+      const vs = variants.filter((v) => v.productId === product.id)
+      const stockByLocation: Record<string, number> = {}
+      for (const v of vs) {
+        for (const [key, qty] of Object.entries(v.stockByLocation)) {
+          if (qty) stockByLocation[key] = (stockByLocation[key] ?? 0) + qty
+        }
+      }
+      return {
+        product,
+        totalStock: vs.reduce((sum, v) => sum + v.stock, 0),
+        stockByLocation,
+      }
     })
     .sort((a, b) => a.product.name.localeCompare(b.product.name))
+}
+function variantsOf(productId: ProductId): Variant[] {
+  return variants.filter((v) => v.productId === productId).sort((a, b) => a.size - b.size)
 }
 function notify() {
   const snapshot = buildCatalog()
   for (const l of listeners) l(snapshot)
+  for (const { productId, cb } of productVariantListeners) cb(variantsOf(productId))
+  const withStock = variants.filter((v) => v.stock > 0)
+  for (const cb of stockVariantListeners) cb(withStock)
 }
 
 // ── API que consumen los repositorios en modo demo ───────────────────────────
@@ -326,6 +347,19 @@ export const demoBackend = {
     listeners.add(onChange)
     onChange(buildCatalog())
     return () => listeners.delete(onChange)
+  },
+
+  subscribeProductVariants(productId: ProductId, onChange: VariantsListener): () => void {
+    const entry = { productId, cb: onChange }
+    productVariantListeners.add(entry)
+    onChange(variantsOf(productId))
+    return () => productVariantListeners.delete(entry)
+  },
+
+  subscribeVariantsWithStock(onChange: VariantsListener): () => void {
+    stockVariantListeners.add(onChange)
+    onChange(variants.filter((v) => v.stock > 0))
+    return () => stockVariantListeners.delete(onChange)
   },
 
   findByBarcode(barcode: string): Promise<VariantWithProduct> {

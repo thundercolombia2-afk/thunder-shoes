@@ -153,6 +153,18 @@ service cloud.firestore {
       allow create: if hasProfile();
       // Editar o eliminar una referencia: solo socios (incluye la dueña).
       allow update, delete: if isSocio();
+      // EXCEPCIÓN para el resumen de stock: la transacción de `recordMany` le
+      // suma el delta al documento del producto, y quien vende es un VENDEDOR,
+      // no un socio. Sin esta regla toda venta de un vendedor se cae con
+      // `permission-denied`.
+      //
+      // `hasOnly` es el candado: se permiten SOLO esos dos campos, así que un
+      // vendedor sigue sin poder tocar precio, costo, nombre ni `active`.
+      // Actualizar `stockByLocation.s:163` afecta la clave de primer nivel
+      // `stockByLocation`, que es la que `affectedKeys()` reporta.
+      allow update: if hasProfile()
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['stock', 'stockByLocation']);
       match /variants/{size} {
         allow read, write: if hasProfile();
       }

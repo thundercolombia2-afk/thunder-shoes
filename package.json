@@ -13,6 +13,7 @@
     "typecheck": "tsc --noEmit",
     "seed": "tsx scripts/seed.ts",
     "seed:scaffold": "tsx scripts/scaffold.ts",
+    "backfill:stock": "tsx scripts/backfillProductStock.ts",
     "emulators": "firebase emulators:start --only firestore,auth"
   },
   "dependencies": {

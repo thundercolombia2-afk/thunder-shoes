@@ -9,16 +9,16 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useBodegas, useCatalog } from '@/app/hooks'
+import { useBodegas, useCatalog, useProductVariants } from '@/app/hooks'
 import { useSession } from '@/app/session'
 import { movementRepository } from '@/data/repositories/movementRepository'
 import { configRepository } from '@/data/repositories/configRepository'
-import { errorMessage } from '@/domain/rules'
+import { errorMessage, parseBarcode } from '@/domain/rules'
 import { bodegaKey, stockAt } from '@/domain/locations'
 import { normalize } from '@/domain/sales'
 import { InventoryLayout } from './_shared'
 import { Icon } from '@/ui/Icon'
-import type { ProductWithVariants } from '@/data/repositories/catalogRepository'
+import type { ProductRow } from '@/data/repositories/catalogRepository'
 
 interface Row {
   size: number | ''
@@ -51,7 +51,7 @@ export function AddStockScreen() {
   const navigate = useNavigate()
 
   const [query, setQuery] = useState('')
-  const [product, setProduct] = useState<ProductWithVariants | null>(null)
+  const [product, setProduct] = useState<ProductRow | null>(null)
   const [rows, setRows] = useState<Row[]>([{ size: '', qty: '1' }])
   const [bodegaId, setBodegaId] = useState('')
   const [password, setPassword] = useState('')
@@ -75,6 +75,14 @@ export function AddStockScreen() {
 
   // Búsqueda a nivel de REFERENCIA.
   const term = normalize(query)
+  // Un código de barras es SKU-TALLA (`buildBarcode`), así que buscar por código
+  // ES buscar por SKU: se le quita el sufijo de talla al término y se compara
+  // contra el SKU. Antes esto recorría las variantes de todo el catálogo, que ya
+  // no están en memoria; el resultado es el mismo (y más preciso).
+  const skuFromCode = useMemo(() => {
+    const parsed = parseBarcode(query)
+    return parsed ? normalize(parsed.sku) : null
+  }, [query])
   const suggestions = useMemo(() => {
     if (!term || product) return []
     return catalog
@@ -82,21 +90,24 @@ export function AddStockScreen() {
         (r) =>
           normalize(r.product.name).includes(term) ||
           normalize(r.product.sku).includes(term) ||
-          r.variants.some((v) => normalize(v.barcode).includes(term)),
+          (skuFromCode !== null && normalize(r.product.sku).includes(skuFromCode)),
       )
       .slice(0, 10)
-  }, [catalog, term, product])
+  }, [catalog, term, product, skuFromCode])
 
   // Catálogo en vivo por si otro movimiento cambia el stock.
   const current = product ? (catalog.find((r) => r.product.id === product.product.id) ?? product) : null
-  const sizes = current ? current.variants.filter((v) => v.active).map((v) => v.size).sort((a, b) => a - b) : []
+  // Tallas de la referencia elegida (~9 lecturas). Tienen que venir TODAS,
+  // incluidas las agotadas: reponer una talla en cero es justo lo que se hace acá.
+  const { variants: currentVariants } = useProductVariants(current?.product.id ?? null)
+  const sizes = currentVariants.filter((v) => v.active).map((v) => v.size).sort((a, b) => a - b)
 
   const variantFor = (size: number | '') =>
-    current && size !== '' ? current.variants.find((v) => v.size === size) : undefined
+    size !== '' ? currentVariants.find((v) => v.size === size) : undefined
   const stockOf = (size: number | '') =>
     bodega ? stockAt(variantFor(size)?.stockByLocation, bodegaKey(bodega.id)) : 0
 
-  const pick = (r: ProductWithVariants) => {
+  const pick = (r: ProductRow) => {
     setProduct(r)
     setQuery(r.product.name)
     setRows([{ size: '', qty: '1' }])
@@ -208,7 +219,7 @@ export function AddStockScreen() {
                     <span style={{ display: 'block', font: '700 14px var(--font-display)', color: 'var(--text-primary)' }}>{r.product.name}</span>
                     <span style={{ font: '600 12px var(--font-mono)', color: 'var(--text-muted)' }}>{r.product.sku}</span>
                   </span>
-                  <span style={{ fontSize: 12.5, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{r.variants.length} tallas</span>
+                  <span style={{ fontSize: 12.5, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{r.totalStock} {r.totalStock === 1 ? 'par' : 'pares'}</span>
                 </button>
               ))}
             </div>

@@ -16,7 +16,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useBodegas, useCatalog, useStores } from '@/app/hooks'
+import { useBodegas, useCatalog, useStores, useVariantsWithStock } from '@/app/hooks'
 import { useSession } from '@/app/session'
 import { movementRepository, type MovementActor } from '@/data/repositories/movementRepository'
 import { stockAt, storeKey } from '@/domain/locations'
@@ -41,6 +41,10 @@ const TABS: { key: Tab; label: string }[] = [
 export function LocalesScreen() {
   const { data: stores } = useStores()
   const { data: catalog } = useCatalog()
+  // Solo esta pantalla y el par de cambio necesitan tallas de TODO el catálogo
+  // (el desglose por talla del stock del local). Es más caro que la lista, y por
+  // eso no lo usan las pantallas de entrada.
+  const { variants: variantsWithStock } = useVariantsWithStock()
   const { user, actor } = useSession()
   const bodegas = useBodegas()
   const [movs, setMovs] = useState<Movement[]>([])
@@ -214,9 +218,13 @@ export function LocalesScreen() {
    * ese mismo, o las vueltas en efectivo saldrían mal.
    */
   const livePriceOf = useCallback(
-    (variantId: string) =>
-      catalog.find((r) => r.variants.some((v) => String(v.id) === String(variantId)))?.product.price ??
-      null,
+    (variantId: string) => {
+      // El id de variante es "productId:talla", así que la referencia sale de ahí
+      // sin recorrer tallas. Además funciona con una talla ya agotada, que es el
+      // caso real: el par se entregó y puede haberse vendido el resto.
+      const productId = String(variantId).split(':')[0]
+      return catalog.find((r) => String(r.product.id) === productId)?.product.price ?? null
+    },
     [catalog],
   )
 
@@ -248,19 +256,33 @@ export function LocalesScreen() {
     [deliveries, effectiveQtyOf],
   )
 
+  // Tallas con stock EN ESTE LOCAL, agrupadas por referencia. Salen de la
+  // suscripción a tallas con stock (no del catálogo, que ya no las trae): una
+  // talla con cantidad en una ubicación tiene por definición `stock > 0`, así que
+  // el desglose es exactamente el mismo que antes.
+  const sizesByProduct = useMemo(() => {
+    const byProduct = new Map<string, { size: number; qty: number }[]>()
+    for (const v of variantsWithStock) {
+      const qty = stockAt(v.stockByLocation, key)
+      if (qty <= 0) continue
+      const bucket = byProduct.get(String(v.productId))
+      if (bucket) bucket.push({ size: v.size, qty })
+      else byProduct.set(String(v.productId), [{ size: v.size, qty }])
+    }
+    for (const bucket of byProduct.values()) bucket.sort((a, b) => a.size - b.size)
+    return byProduct
+  }, [variantsWithStock, key])
+
   const stockRows = useMemo(() => {
     if (!store) return []
     return catalog
       .map((r) => {
-        const sizes = r.variants
-          .map((v) => ({ size: v.size, qty: stockAt(v.stockByLocation, key) }))
-          .filter((x) => x.qty > 0)
-          .sort((a, b) => a.size - b.size)
+        const sizes = sizesByProduct.get(String(r.product.id)) ?? []
         return { product: r.product, sizes, total: sizes.reduce((s, x) => s + x.qty, 0) }
       })
       .filter((x) => x.total > 0)
       .sort((a, b) => a.product.name.localeCompare(b.product.name))
-  }, [catalog, key, store])
+  }, [catalog, sizesByProduct, store])
 
   // El titular va NETO, igual que el dashboard: lo devuelto no es plata vendida.
   // Lo devuelto no desaparece, se ve en su propia casilla del desglose de abajo.

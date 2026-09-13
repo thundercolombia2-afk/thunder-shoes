@@ -4,11 +4,11 @@
  * variantes y su índice de códigos en una sola transacción.
  */
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useSession } from '@/app/session'
-import { useCatalog } from '@/app/hooks'
-import { catalogRepository, type ProductWithVariants } from '@/data/repositories/catalogRepository'
+import { useCatalog, useProductVariants } from '@/app/hooks'
+import { catalogRepository, type ProductRow } from '@/data/repositories/catalogRepository'
 import { ALL_SIZES, EXTRA_SIZES, money, SIZES, type Size } from '@/domain/models'
 import { normalize } from '@/domain/sales'
 import { buildBarcode, errorMessage } from '@/domain/rules'
@@ -46,7 +46,25 @@ export function NewReferenceScreen() {
   const { data: catalog } = useCatalog()
   // Referencia existente elegida de la lista: mientras esté marcada, la pantalla
   // deja de ser "crear" y pasa a mostrar lo que ya hay (incluidos sus códigos).
-  const [existing, setExisting] = useState<ProductWithVariants | null>(null)
+  const [existing, setExisting] = useState<ProductRow | null>(null)
+  // Tallas de la referencia elegida (~9 lecturas), incluidas las AGOTADAS: son
+  // las que llevan el código ya impreso y hay que poder reimprimirlo.
+  const { variants: existingVariants, loading: existingVariantsLoading } = useProductVariants(
+    existing?.product.id ?? null,
+  )
+  // Se marcan las tallas que la referencia maneja UNA sola vez por referencia. Si
+  // se sincronizara en cada emisión, una venta de otro local borraría lo que la
+  // persona acabara de elegir para imprimir.
+  const sizesSyncedFor = useRef<string | null>(null)
+  useEffect(() => {
+    if (!existing) {
+      sizesSyncedFor.current = null
+      return
+    }
+    if (existingVariantsLoading || sizesSyncedFor.current === existing.product.id) return
+    sizesSyncedFor.current = existing.product.id
+    setSizes(new Set(existingVariants.filter((v) => v.active).map((v) => v.size)))
+  }, [existing, existingVariants, existingVariantsLoading])
 
   // Sobre ALL_SIZES y no SIZES: si no, una talla pequeña elegida en el modal se
   // perdería al generar los códigos y al guardar.
@@ -77,22 +95,23 @@ export function NewReferenceScreen() {
   const barcodeRows = useMemo(() => {
     // De una referencia existente se muestran los códigos REALES guardados (los
     // que ya están impresos), no los que se reconstruirían del SKU.
-    const saved = new Map(existing?.variants.map((v) => [v.size, v.barcode]) ?? [])
+    const saved = new Map(existingVariants.map((v) => [v.size, v.barcode]))
     return selectedSizes.map((size) => ({
       size,
       code: saved.get(size) ?? (skuUpper ? buildBarcode(skuUpper, size) : `—-${size}`),
     }))
-  }, [selectedSizes, skuUpper, existing])
+  }, [selectedSizes, skuUpper, existingVariants])
 
   /** Carga en el formulario todos los datos de una referencia que ya existe. */
-  const pickExisting = (r: ProductWithVariants) => {
+  const pickExisting = (r: ProductRow) => {
     setExisting(r)
     setName(r.product.name)
     setSku(r.product.sku)
     setPrice(String(r.product.price))
     setCost(String(r.product.cost))
     setMinStock(String(r.product.minStock))
-    setSizes(new Set(r.variants.filter((v) => v.active).map((v) => v.size)))
+    // Las tallas NO se fijan aquí: la lista del catálogo ya no las trae y llegan
+    // por `useProductVariants`. Las marca el efecto de abajo cuando lleguen.
     setAttempted(false)
     setError('')
   }
@@ -111,7 +130,7 @@ export function NewReferenceScreen() {
 
   /** Tallas que la referencia existente maneja (las únicas con código impreso). */
   const availableSizes = existing
-    ? new Set(existing.variants.filter((v) => v.active).map((v) => v.size))
+    ? new Set(existingVariants.filter((v) => v.active).map((v) => v.size))
     : null
 
   // Las tallas pequeñas solo ocupan sitio en la fila cuando están en juego: o la
@@ -352,7 +371,7 @@ export function NewReferenceScreen() {
                     <span style={{ font: '600 12px var(--font-mono)', color: 'var(--text-muted)' }}>{r.product.sku}</span>
                   </span>
                   <span style={{ fontSize: 12.5, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
-                    {r.variants.length} {r.variants.length === 1 ? 'talla' : 'tallas'} · {r.totalStock} pares
+                    {r.totalStock} {r.totalStock === 1 ? 'par' : 'pares'}
                   </span>
                 </button>
               ))}

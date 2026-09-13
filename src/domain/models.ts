@@ -95,6 +95,24 @@ export interface Product {
   active: boolean
   createdAt: Date
   updatedAt: Date
+  /**
+   * Resumen del stock de TODAS las tallas de la referencia. Proyección que
+   * mantiene la MISMA transacción que mueve el stock (`recordMany`), para poder
+   * pintar la lista de inventario sin leer las ~1.750 variantes del catálogo.
+   *
+   * Invariante: `stock === Σ variants[].stock` y para cada ubicación `k`,
+   * `stockByLocation[k] === Σ variants[].stockByLocation[k]`.
+   *
+   * Es el mismo patrón que `Variant.stock` respecto a `Variant.stockByLocation`:
+   * un agregado escrito con `increment`, no una fuente de verdad. La fuente de
+   * verdad sigue siendo la talla, y `movements` permite recalcularlo entero.
+   *
+   * OPCIONALES a propósito: una referencia creada antes del relleno puede no
+   * tenerlos, y ausente significa "sin calcular", NO "cero". Quien los lea tiene
+   * que distinguir los dos casos o mostrará stock cero donde hay mercancía.
+   */
+  stock?: number
+  stockByLocation?: Record<string, number>
 }
 
 /**

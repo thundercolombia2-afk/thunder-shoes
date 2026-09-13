@@ -48,11 +48,27 @@ import { DomainError, buildBarcode } from '@/domain/rules'
 import { DEMO } from '@/config'
 import { demoBackend } from '../demoBackend'
 
-/** Una referencia con todas sus tallas, que es como la pinta el inventario. */
+/** Una referencia con todas sus tallas. Para el DETALLE de una referencia. */
 export interface ProductWithVariants {
   product: Product
   variants: Variant[]
   totalStock: number
+}
+
+/**
+ * Una referencia con su RESUMEN de stock, sin las tallas. Es como se pinta la
+ * LISTA: traer las ~1.750 variantes del catálogo costaba otras tantas lecturas
+ * por carga en frío, y la lista solo necesita totales.
+ *
+ * Los dos campos salen de la proyección que mantiene `recordMany`
+ * (`Product.stock` / `Product.stockByLocation`), no de sumar tallas.
+ */
+export interface ProductRow {
+  product: Product
+  /** Stock total del sistema, todas las tallas sumadas. */
+  totalStock: number
+  /** Stock por ubicación, todas las tallas sumadas. */
+  stockByLocation: Record<string, number>
 }
 
 export interface NewProductInput {
@@ -76,80 +92,89 @@ export interface EditProductInput {
 
 export const catalogRepository = {
   /**
-   * Suscripción en vivo al catálogo. El POS necesita que si el local 163 vende
-   * el último par, la pantalla del 173 lo refleje sin recargar.
+   * Suscripción en vivo a la LISTA del catálogo. El POS necesita que si el local
+   * 163 vende el último par, la pantalla del 173 lo refleje sin recargar.
    *
-   * Trae productos y variantes en dos escuchas y las une en memoria: son
-   * decenas de referencias, no miles, y evita N+1 suscripciones.
+   * Solo trae los documentos de PRODUCTO (194), no las tallas (~1.750): los
+   * totales salen del resumen que mantiene `recordMany` en el propio producto.
+   * Quien necesite las tallas de una referencia usa `subscribeToProductVariants`;
+   * quien necesite las tallas con stock de todo el catálogo,
+   * `subscribeToVariantsWithStock`.
    */
   subscribeToCatalog(
-    onChange: (catalog: ProductWithVariants[]) => void,
+    onChange: (catalog: ProductRow[]) => void,
     onError?: (error: unknown) => void,
   ): Unsubscribe {
     if (DEMO) return demoBackend.subscribeCatalog(onChange)
-    let products: Product[] = []
-    let variantsByProduct = new Map<string, Variant[]>()
-    let hasProducts = false
-    let hasVariants = false
-
-    const emit = () => {
-      if (!hasProducts || !hasVariants) return
-      onChange(
-        products.map((product) => {
-          const variants = (variantsByProduct.get(product.id) ?? []).sort(
-            (a, b) => a.size - b.size,
-          )
-          return {
-            product,
-            variants,
-            totalStock: variants.reduce((sum, v) => sum + v.stock, 0),
-          }
-        }),
-      )
-    }
-
     // Se filtra por `active` y se ORDENA en memoria a propósito: `where + orderBy`
     // sobre campos distintos exige un índice compuesto, y si no está desplegado la
     // suscripción falla en silencio y el inventario se queda "Cargando…". Con un
     // solo `where` no hace falta índice y funciona incluso desde el caché offline.
-    const stopProducts = onSnapshot(
+    return onSnapshot(
       query(productsRef(), where('active', '==', true)),
       (snap) => {
-        products = snap.docs.map(productFromDoc).sort((a, b) => a.name.localeCompare(b.name))
-        hasProducts = true
-        emit()
+        onChange(
+          snap.docs
+            .map(productFromDoc)
+            .sort((a, b) => a.name.localeCompare(b.name))
+            // `?? 0` solo aplica a una referencia sin rellenar. El relleno
+            // (`npm run backfill:stock`) corre antes de desplegar justamente para
+            // que esa rama no se dé: si se diera, la fila mostraría 0 pares.
+            .map((product) => ({
+              product,
+              totalStock: product.stock ?? 0,
+              stockByLocation: product.stockByLocation ?? {},
+            })),
+        )
       },
+      // Sin esto, un error de permisos o de índice dejaba el inventario colgado
+      // en "Cargando…" para siempre.
       (error) => onError?.(error),
     )
-
-    const stopVariants = onSnapshot(
-      allVariantsRef(),
-      (snap) => {
-        const next = new Map<string, Variant[]>()
-        for (const docSnap of snap.docs) {
-          const variant = variantFromDoc(docSnap)
-          const bucket = next.get(variant.productId)
-          if (bucket) bucket.push(variant)
-          else next.set(variant.productId, [variant])
-        }
-        variantsByProduct = next
-        hasVariants = true
-        emit()
-      },
-      (error) => onError?.(error),
-    )
-
-    return () => {
-      stopProducts()
-      stopVariants()
-    }
   },
 
   /**
-   * Resuelve un código de barras escaneado.
-   * Dos lecturas por id (índice → variante) más el producto. Sin consultas,
-   * sin índices compuestos, y funciona desde el caché offline.
+   * Tallas de UNA referencia, en vivo. Son ~9 documentos: es la consulta que
+   * paga el detalle de una referencia en vez de tener el catálogo entero en
+   * memoria. Trae también las tallas AGOTADAS, que es justo lo que el detalle
+   * necesita para poder reponerlas y para mostrar su código impreso.
    */
+  subscribeToProductVariants(
+    productId: ProductId,
+    onChange: (variants: Variant[]) => void,
+    onError?: (error: unknown) => void,
+  ): Unsubscribe {
+    if (DEMO) return demoBackend.subscribeProductVariants(productId, onChange)
+    return onSnapshot(
+      variantsRef(productId),
+      (snap) => onChange(snap.docs.map(variantFromDoc).sort((a, b) => a.size - b.size)),
+      (error) => onError?.(error),
+    )
+  },
+
+  /**
+   * Tallas CON STOCK de todo el catálogo, en vivo. La usan las pantallas que
+   * preguntan "qué hay en mi local" atravesando el catálogo (el stock del local
+   * y el par de cambio): una talla con stock en una ubicación tiene por
+   * definición `stock > 0`, así que el filtro no les esconde nada.
+   *
+   * Se filtra por `stock` y NO por `stockByLocation.<clave>`: lo segundo exige un
+   * índice COLLECTION_GROUP_ASC por CADA ubicación, así que cada bodega nueva
+   * pediría un índice nuevo. Por `stock` funciona con el índice automático, igual
+   * que `listLowStock`.
+   */
+  subscribeToVariantsWithStock(
+    onChange: (variants: Variant[]) => void,
+    onError?: (error: unknown) => void,
+  ): Unsubscribe {
+    if (DEMO) return demoBackend.subscribeVariantsWithStock(onChange)
+    return onSnapshot(
+      query(allVariantsRef(), where('stock', '>', 0)),
+      (snap) => onChange(snap.docs.map(variantFromDoc)),
+      (error) => onError?.(error),
+    )
+  },
+
   async findByBarcode(barcode: string): Promise<VariantWithProduct> {
     if (DEMO) return demoBackend.findByBarcode(barcode)
     const indexSnap = await getDoc(barcodeRef(barcode))

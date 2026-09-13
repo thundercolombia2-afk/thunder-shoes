@@ -6,10 +6,10 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { storeRepository } from '@/data/repositories/storeRepository'
-import { catalogRepository, type ProductWithVariants } from '@/data/repositories/catalogRepository'
+import { catalogRepository, type ProductRow } from '@/data/repositories/catalogRepository'
 import { movementRepository } from '@/data/repositories/movementRepository'
 import { bodegaRepository } from '@/data/repositories/bodegaRepository'
-import type { Bodega, Movement, MovementType, Store, StoreId } from '@/domain/models'
+import type { Bodega, Movement, MovementType, ProductId, Store, StoreId, Variant } from '@/domain/models'
 import type { DocumentData, QueryDocumentSnapshot } from 'firebase/firestore'
 
 interface AsyncState<T> {
@@ -44,11 +44,15 @@ export function useBodegas(): Bodega[] {
 }
 
 /**
- * Catálogo en vivo. Se suscribe una sola vez y se refresca solo cuando
- * Firestore emite cambios: si otro local vende, esta pantalla lo refleja.
+ * LISTA del catálogo en vivo: una fila por referencia con su resumen de stock,
+ * SIN las tallas. Se refresca cuando Firestore emite cambios: si otro local
+ * vende, esta pantalla lo refleja.
+ *
+ * Para las tallas de una referencia concreta está `useProductVariants`, y para
+ * las tallas con stock de todo el catálogo `useVariantsWithStock`.
  */
-export function useCatalog(): AsyncState<ProductWithVariants[]> {
-  const [state, setState] = useState<AsyncState<ProductWithVariants[]>>({
+export function useCatalog(): AsyncState<ProductRow[]> {
+  const [state, setState] = useState<AsyncState<ProductRow[]>>({
     data: [],
     loading: true,
     error: null,
@@ -63,6 +67,64 @@ export function useCatalog(): AsyncState<ProductWithVariants[]> {
     )
     return unsubscribe
   }, [])
+
+  return state
+}
+
+/**
+ * Tallas de UNA referencia, en vivo (~9 documentos). `null` no se suscribe a
+ * nada: así el detalle solo paga cuando está abierto.
+ *
+ * `loading` arranca en true y solo baja cuando llega la primera emisión. Quien
+ * pinte tallas tiene que esperarlo: una lista vacía todavía cargando se ve
+ * igual que una referencia sin tallas, y no son lo mismo.
+ */
+export function useProductVariants(productId: ProductId | null): {
+  variants: Variant[]
+  loading: boolean
+  error: unknown
+} {
+  const [state, setState] = useState<{ variants: Variant[]; loading: boolean; error: unknown }>({
+    variants: [],
+    loading: productId !== null,
+    error: null,
+  })
+
+  useEffect(() => {
+    if (productId === null) {
+      setState({ variants: [], loading: false, error: null })
+      return
+    }
+    setState({ variants: [], loading: true, error: null })
+    return catalogRepository.subscribeToProductVariants(
+      productId,
+      (variants) => setState({ variants, loading: false, error: null }),
+      (error) => setState({ variants: [], loading: false, error }),
+    )
+  }, [productId])
+
+  return state
+}
+
+/**
+ * Tallas CON STOCK de todo el catálogo, en vivo. Solo para las pantallas que
+ * preguntan "qué hay en mi local" atravesando el catálogo; es más caro que la
+ * lista, así que no se usa en las pantallas de entrada.
+ */
+export function useVariantsWithStock(): { variants: Variant[]; loading: boolean } {
+  const [state, setState] = useState<{ variants: Variant[]; loading: boolean }>({
+    variants: [],
+    loading: true,
+  })
+
+  useEffect(
+    () =>
+      catalogRepository.subscribeToVariantsWithStock(
+        (variants) => setState({ variants, loading: false }),
+        () => setState({ variants: [], loading: false }),
+      ),
+    [],
+  )
 
   return state
 }

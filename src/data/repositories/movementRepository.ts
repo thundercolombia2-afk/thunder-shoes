@@ -240,6 +240,39 @@ export const movementRepository = {
         tx.update(variantRef(productId, size), update)
       })
 
+      // Resumen por REFERENCIA (`Product.stock` / `Product.stockByLocation`): el
+      // mismo delta agregado al documento del producto, para que la lista de
+      // inventario no tenga que leer las ~1.750 variantes del catálogo.
+      //
+      // Se acumula por producto ANTES de escribir: un carrito con la talla 40 y
+      // la 42 de la misma referencia son dos líneas, pero un solo documento de
+      // producto. Dos `tx.update` al mismo documento en una transacción son una
+      // escritura ambigua; una sola con el delta sumado no lo es.
+      //
+      // El documento del producto ya se leyó arriba (`tx.get(productRef(...))`),
+      // así que esto no cuesta ninguna lectura extra: solo una escritura más por
+      // referencia distinta del carrito.
+      const productRollups = new Map<ProductId, { delta: number; byLocation: Map<string, number> }>()
+      writes.forEach(({ productId, delta, locDeltas }) => {
+        const rollup = productRollups.get(productId) ?? { delta: 0, byLocation: new Map<string, number>() }
+        rollup.delta += delta
+        for (const { key, delta: d } of locDeltas) {
+          rollup.byLocation.set(key, (rollup.byLocation.get(key) ?? 0) + d)
+        }
+        productRollups.set(productId, rollup)
+      })
+
+      productRollups.forEach((rollup, productId) => {
+        // Sin `updatedAt`: ese campo significa "cuándo se editó la referencia"
+        // (nombre, precio), y una venta no edita la referencia. Tocarlo aquí
+        // ensuciaría ese significado y ensancharía el permiso de las reglas.
+        const update: DocumentData = { stock: increment(rollup.delta) }
+        rollup.byLocation.forEach((d, key) => {
+          update[`stockByLocation.${key}`] = increment(d)
+        })
+        tx.update(productRef(productId), update)
+      })
+
       tx.set(dailyStatsRef(dayKey), buildDailyDelta(movements, counted, actor.storeId, occurredAt), {
         merge: true,
       })

@@ -12,12 +12,12 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useSession } from '@/app/session'
 import { useCart, type CartLine } from '@/app/cart'
-import { useBodegas, useCatalog } from '@/app/hooks'
+import { useBodegas, useCatalog, useProductVariants } from '@/app/hooks'
 import { useIsMobile } from '@/app/useMediaQuery'
 import { useScanWithOverlay } from '@/app/scanFlow'
 import { useBarcodeScanner, useScannerFieldSubmit } from '@/app/barcodeScanner'
 import { CameraScanner, cameraScanSupported } from '@/app/CameraScanner'
-import { catalogRepository } from '@/data/repositories/catalogRepository'
+import { catalogRepository, type ProductRow } from '@/data/repositories/catalogRepository'
 import { movementRepository } from '@/data/repositories/movementRepository'
 import {
   money,
@@ -28,7 +28,7 @@ import {
 import type { Sale } from '@/domain/sales'
 import type { Bodega } from '@/domain/models'
 import type { UserProfile } from '@/domain/users'
-import { errorMessage, normalizeBarcode, variantStatus } from '@/domain/rules'
+import { errorMessage, parseBarcode, variantStatus } from '@/domain/rules'
 import { bodegaKey, parseLocationKey, stockAt, storeKey } from '@/domain/locations'
 import { formatMoney } from '@/lib/format'
 import { Icon } from '@/ui/Icon'
@@ -74,26 +74,61 @@ export function ScanScreen() {
     if (!isMobile) inputRef.current?.focus()
   }, [isMobile])
 
-  /** Índice plano del catálogo en vivo: resuelve un escaneo sin ir a la red. */
-  const index = useMemo(
-    () =>
-      catalog.flatMap(({ product, variants }) =>
-        variants
-          .filter((variant) => variant.active)
-          .map((variant) => ({ product, variant, key: `${variant.barcode} ${product.name} ${product.sku}`.toUpperCase() })),
-      ),
-    [catalog],
-  )
-
   const term = query.trim().toUpperCase()
-  const suggestions = useMemo(
-    () => (term ? index.filter((e) => e.key.includes(term)).slice(0, 8) : []),
-    [index, term],
-  )
 
-  /** Stock de una variante en una ubicación concreta (para la vista de bodega). */
+  /**
+   * Búsqueda en DOS PASOS: primero la referencia (los 194 productos están en
+   * memoria), y al elegirla se cargan sus tallas (~9 lecturas). Antes esto era un
+   * índice plano de las ~1.750 variantes del catálogo, que había que traer entero
+   * en cada carga en frío.
+   *
+   * Un código de barras es SKU-TALLA (`buildBarcode`), así que también se busca
+   * por el SKU que lleva dentro: escribir un código completo encuentra su
+   * referencia igual que antes.
+   */
+  const skuFromCode = useMemo(() => {
+    const parsed = parseBarcode(query)
+    return parsed ? parsed.sku.toUpperCase() : null
+  }, [query])
+  const productSuggestions = useMemo(() => {
+    if (!term) return []
+    return catalog
+      .filter(
+        (r) =>
+          r.product.name.toUpperCase().includes(term) ||
+          r.product.sku.toUpperCase().includes(term) ||
+          (skuFromCode !== null && r.product.sku.toUpperCase().includes(skuFromCode)),
+      )
+      .slice(0, 8)
+  }, [catalog, term, skuFromCode])
+
+  /** Referencia elegida en el paso 1; sus tallas son el paso 2. */
+  const [picked, setPicked] = useState<ProductRow | null>(null)
+  const { variants: pickedVariants, loading: pickedLoading } = useProductVariants(
+    picked?.product.id ?? null,
+  )
+  const pickedSizes = useMemo(
+    () => pickedVariants.filter((v) => v.active && v.stock > 0),
+    [pickedVariants],
+  )
+  const closePicker = () => {
+    setPicked(null)
+    setQuery('')
+    if (!isMobile) inputRef.current?.focus()
+  }
+
+  /**
+   * Stock por ubicación de las variantes que YA pasaron por el carrito. El
+   * catálogo en vivo ya no trae las variantes, así que se guarda la que se
+   * agregó: es el mismo dato, tomado en el momento de agregarla.
+   *
+   * Puede quedar viejo si otro local mueve stock con el diálogo abierto, pero el
+   * tope no es el candado real: la transacción revalida contra el servidor
+   * (`assertMovementIsValid`) y rechaza con "stock insuficiente".
+   */
+  const [variantById, setVariantById] = useState<Record<string, VariantWithProduct['variant']>>({})
   const stockAtLoc = (variantId: string, key: string) =>
-    index.find((e) => e.variant.id === variantId)?.variant.stockByLocation[key] ?? 0
+    variantById[String(variantId)]?.stockByLocation[key] ?? 0
 
   // Stock que se puede VENDER aquí: el del local actual. Sin local (bodeguero),
   // no hay venta como tal; se usa el total para no falsear el tope.
@@ -126,8 +161,12 @@ export function ScanScreen() {
     }
     setError('')
     setNotice('')
+    // Se guarda la variante para `stockAtLoc` (la vista de bodega y la devolución
+    // preguntan por ubicación, y el catálogo ya no trae variantes).
+    setVariantById((prev) => ({ ...prev, [String(found.variant.id)]: found.variant }))
     cart.add(found, capOf(found.variant), saleStockOf(found.variant), locationLabelOf(found.variant))
     setQuery('')
+    setPicked(null)
     if (!isMobile) inputRef.current?.focus()
   }
 
@@ -138,15 +177,11 @@ export function ScanScreen() {
   const resolve = async (raw: string) => {
     const code = raw.trim()
     if (!code) return
-    // El catálogo ya está en memoria y en vivo: primero se busca ahí. Se compara
-    // en forma canónica (`normalizeBarcode`) para tolerar un lector que teclee el
-    // guion como apóstrofo (teclado en otra distribución).
-    const target = normalizeBarcode(code)
-    const local = index.find((e) => normalizeBarcode(e.variant.barcode) === target)
-    if (local) {
-      addToCart({ product: local.product, variant: local.variant })
-      return
-    }
+    // Se resuelve por `barcodes/{codigo}`: una lectura directa por id, sin
+    // consulta ni índice. Antes había un atajo contra el catálogo en memoria, que
+    // dejó de existir al no traer las variantes; `findByBarcode` ya normaliza el
+    // código (`normalizeBarcode`) y tolera el lector que teclea el guion como
+    // apóstrofo, así que el resultado es el mismo.
     setError('')
     const found = await scanWithOverlay(() => catalogRepository.findByBarcode(code)).catch((e) => {
       setError(errorMessage(e))
@@ -157,9 +192,17 @@ export function ScanScreen() {
   }
 
   const submit = () => {
-    // Enter con sugerencias abiertas toma la primera, como en el diseño.
-    const first = suggestions[0]
-    if (first) addToCart({ product: first.product, variant: first.variant })
+    // Con referencia ya elegida, Enter toma la primera talla disponible: es el
+    // mismo "Enter toma la primera" de antes, un paso más adentro. Sin elegir,
+    // un código se resuelve (el caso del lector) y un texto abre la primera
+    // referencia para elegir talla — el paso 2 de la búsqueda.
+    if (picked) {
+      const firstSize = pickedSizes[0]
+      if (firstSize) addToCart({ product: picked.product, variant: firstSize })
+      return
+    }
+    const first = productSuggestions[0]
+    if (first && parseBarcode(query) === null) setPicked(first)
     else void resolve(query)
   }
 
@@ -473,7 +516,7 @@ export function ScanScreen() {
           ) : null}
         </div>
 
-        {suggestions.length > 0 ? (
+        {picked || productSuggestions.length > 0 ? (
           <div
             style={{
               position: 'absolute',
@@ -490,34 +533,94 @@ export function ScanScreen() {
               overflowY: 'auto',
             }}
           >
-            {suggestions.map((s) => (
-              <button
-                key={s.variant.id}
-                type="button"
-                onClick={() => addToCart({ product: s.product, variant: s.variant })}
-                className="iw-row"
-                style={{
-                  width: '100%',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: 12,
-                  padding: '12px 16px',
-                  background: 'var(--surface-card)',
-                  border: 'none',
-                  borderBottom: '1px solid var(--border-subtle)',
-                  cursor: 'pointer',
-                  textAlign: 'left',
-                }}
-              >
-                <span style={{ font: '700 13.5px var(--font-mono)', color: 'var(--text-primary)' }}>
-                  {s.variant.barcode}
-                </span>
-                <span style={{ fontSize: 13.5, color: 'var(--text-muted)' }}>
-                  {s.product.name} · stock {s.variant.stock}
-                </span>
-              </button>
-            ))}
+            {picked ? (
+              /* Paso 2: tallas de la referencia elegida. */
+              <div style={{ padding: '12px 16px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 10 }}>
+                  <span style={{ minWidth: 0 }}>
+                    <span style={{ display: 'block', font: '700 13.5px var(--font-display)', color: 'var(--text-primary)' }}>
+                      {picked.product.name}
+                    </span>
+                    <span style={{ font: '600 12px var(--font-mono)', color: 'var(--text-muted)' }}>
+                      {picked.product.sku}
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={closePicker}
+                    style={{ font: '700 12.5px var(--font-body)', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 4 }}
+                  >
+                    Cambiar
+                  </button>
+                </div>
+                {pickedLoading ? (
+                  <span style={{ fontSize: 13.5, color: 'var(--text-muted)' }}>Cargando tallas…</span>
+                ) : pickedSizes.length === 0 ? (
+                  <span style={{ fontSize: 13.5, color: 'var(--text-muted)' }}>Sin tallas disponibles: está agotada.</span>
+                ) : (
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    {pickedSizes.map((variant) => (
+                      <button
+                        key={variant.id}
+                        type="button"
+                        onClick={() => addToCart({ product: picked.product, variant })}
+                        style={{
+                          font: '700 13.5px var(--font-display)',
+                          color: 'var(--text-primary)',
+                          background: 'var(--iw-off-white)',
+                          border: '1px solid var(--border-subtle)',
+                          borderRadius: 'var(--radius-md)',
+                          padding: '8px 11px',
+                          cursor: 'pointer',
+                          lineHeight: 1.1,
+                          textAlign: 'center',
+                        }}
+                      >
+                        {variant.size}
+                        <span style={{ display: 'block', font: '600 11px var(--font-body)', color: 'var(--text-muted)' }}>
+                          {variant.stock}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              /* Paso 1: referencias que coinciden con lo escrito. */
+              productSuggestions.map((r) => (
+                <button
+                  key={r.product.id}
+                  type="button"
+                  onClick={() => setPicked(r)}
+                  className="iw-row"
+                  style={{
+                    width: '100%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: 12,
+                    padding: '12px 16px',
+                    background: 'var(--surface-card)',
+                    border: 'none',
+                    borderBottom: '1px solid var(--border-subtle)',
+                    cursor: 'pointer',
+                    textAlign: 'left',
+                  }}
+                >
+                  <span style={{ minWidth: 0 }}>
+                    <span style={{ display: 'block', font: '700 13.5px var(--font-display)', color: 'var(--text-primary)' }}>
+                      {r.product.name}
+                    </span>
+                    <span style={{ font: '600 12px var(--font-mono)', color: 'var(--text-muted)' }}>
+                      {r.product.sku}
+                    </span>
+                  </span>
+                  <span style={{ fontSize: 13.5, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+                    stock {r.totalStock}
+                  </span>
+                </button>
+              ))
+            )}
           </div>
         ) : null}
       </form>
@@ -628,7 +731,7 @@ export function ScanScreen() {
         <DevolucionModal
           fallback={returnFallback}
           catalog={catalog}
-          localStockOf={(variantId) => (localKey ? stockAtLoc(variantId, localKey) : 0)}
+          localKey={localKey}
           busy={busy}
           error={dialogError}
           onClose={() => setDialog('none')}
