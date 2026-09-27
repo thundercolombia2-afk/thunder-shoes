@@ -62,13 +62,9 @@ export function DashboardScreen() {
   // debe poder crear/editar/eliminar egresos.
   const canManageExpenses = user?.role === 'socio'
 
-  // Ingresos (ventas) y egresos (gastos a mano) para las tablas.
-  const [movs, setMovs] = useState<Movement[]>([])
+  // Egresos (gastos a mano) para su tabla; los ingresos se cargan por rango abajo.
   const [expenses, setExpenses] = useState<Expense[]>([])
   const [tab, setTab] = useState<'ingresos' | 'egresos'>('ingresos')
-  useEffect(() => {
-    movementRepository.listRecent().then(setMovs).catch(() => undefined)
-  }, [])
   useEffect(() => expenseRepository.subscribe(setExpenses), [])
 
   // Rango de fechas de las tarjetas de resumen (por defecto, solo hoy). Se
@@ -89,11 +85,41 @@ export function DashboardScreen() {
       ? formatLongDate(dayKeyToDate(dateFrom))
       : `${formatShortDate(dayKeyToDate(dateFrom))} – ${formatShortDate(dayKeyToDate(dateTo))}`
 
-  // Las tablas de abajo (Ingresos/Egresos) respetan el mismo rango.
-  const incomes = useMemo(
-    () => movs.filter((m) => m.type === 'sale' && m.dayKey >= dateFrom && m.dayKey <= dateTo),
-    [movs, dateFrom, dateTo],
-  )
+  // Las tablas de abajo (Ingresos/Egresos) respetan el mismo rango. Las ventas
+  // se piden a Firestore POR RANGO: antes se filtraban los últimos 300
+  // movimientos y un día viejo salía vacío aunque la tarjeta de Ventas lo sumara.
+  const [incomes, setIncomes] = useState<Movement[]>([])
+  const [incomesState, setIncomesState] = useState<IncomesState>('loading')
+  useEffect(() => {
+    let stale = false // si el rango cambia antes de que llegue la respuesta, se descarta
+    // Se vacía de una: si no, mientras carga se verían las ventas del rango
+    // anterior bajo la etiqueta del nuevo.
+    setIncomes([])
+    setIncomesState('loading')
+    // Al escribir el año a mano, cada tecla deja una fecha válida (0002-09-14,
+    // 0020-09-14…) que pediría TODO el histórico. Se espera a que termine de
+    // escribir y se ignoran años absurdos: con el plan Spark cada consulta cuenta.
+    if (!isPlausibleDayKey(dateFrom) || !isPlausibleDayKey(dateTo)) return
+    const timer = window.setTimeout(() => {
+      movementRepository
+        .listSalesInRange(dateFrom, dateTo)
+        .then((sales) => {
+          if (stale) return
+          setIncomes(sales)
+          setIncomesState('ok')
+        })
+        .catch((e: unknown) => {
+          if (stale) return
+          // El mensaje de Firestore trae el enlace para crear un índice faltante.
+          console.error('No se pudieron cargar las ventas del rango', e)
+          setIncomesState('error')
+        })
+    }, 400)
+    return () => {
+      stale = true
+      window.clearTimeout(timer)
+    }
+  }, [dateFrom, dateTo])
   const expensesInRange = useMemo(
     () => expenses.filter((e) => e.dayKey >= dateFrom && e.dayKey <= dateTo),
     [expenses, dateFrom, dateTo],
@@ -213,7 +239,7 @@ export function DashboardScreen() {
       </div>
 
       {tab === 'ingresos' ? (
-        <IncomeTab incomes={incomes} stores={stores} />
+        <IncomeTab incomes={incomes} state={incomesState} stores={stores} />
       ) : (
         <ExpenseTab
           expenses={expensesInRange}
@@ -228,7 +254,13 @@ export function DashboardScreen() {
 /** Tabla de INGRESOS: las ventas (concepto, detalle, cantidad, valor, fecha,
  *  local, vendedor), de más reciente a más antigua. Se puede filtrar por local
  *  y por texto (zapato, cliente o vendedor). */
-function IncomeTab({ incomes, stores }: { incomes: Movement[]; stores: Store[] }) {
+type IncomesState = 'loading' | 'ok' | 'error'
+
+/** Fecha completa (AAAA-MM-DD) y de un año que tenga sentido para el negocio. */
+const isPlausibleDayKey = (dayKey: string): boolean =>
+  /^\d{4}-\d{2}-\d{2}$/.test(dayKey) && dayKey >= '2020-01-01'
+
+function IncomeTab({ incomes, state, stores }: { incomes: Movement[]; state: IncomesState; stores: Store[] }) {
   const [storeId, setStoreId] = useState('')
   const [search, setSearch] = useState('')
 
@@ -252,7 +284,18 @@ function IncomeTab({ incomes, stores }: { incomes: Movement[]; stores: Store[] }
       <SummaryBar label={`${rows.length} ${rows.length === 1 ? 'venta' : 'ventas'} · ${units} pares`} value={<Money value={total} />} />
       <TableCard headers={['Concepto', 'Detalle', 'Cant.', 'Valor', 'Fecha', 'Local', 'Vendedor']}>
         {rows.length === 0 ? (
-          <EmptyRow cols={7} text={incomes.length === 0 ? 'Todavía no hay ventas registradas.' : 'Ninguna venta coincide con el filtro.'} />
+          <EmptyRow
+            cols={7}
+            text={
+              state === 'loading'
+                ? 'Cargando ventas…'
+                : state === 'error'
+                  ? 'No se pudieron cargar las ventas de estas fechas. Vuelve a elegir el rango en un momento; si sigue fallando, avísale al administrador.'
+                  : incomes.length === 0
+                    ? 'No hay ventas registradas en estas fechas.'
+                    : 'Ninguna venta coincide con el filtro.'
+            }
+          />
         ) : (
           rows.map((m) => (
             <tr key={m.id} style={{ borderTop: '1px solid var(--border-subtle)' }}>

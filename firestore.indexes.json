@@ -44,6 +44,16 @@
         { "fieldPath": "dayKey", "order": "DESCENDING" },
         { "fieldPath": "occurredAt", "order": "DESCENDING" }
       ]
+    },
+    {
+      "//": "Tabla de Ingresos: ventas de un rango de días, más reciente primero.",
+      "collectionGroup": "movements",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "type", "order": "ASCENDING" },
+        { "fieldPath": "dayKey", "order": "DESCENDING" },
+        { "fieldPath": "occurredAt", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": [

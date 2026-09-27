@@ -490,6 +490,31 @@ export const movementRepository = {
   },
 
   /**
+   * Ventas de un rango de días, más reciente primero: la tabla de Ingresos.
+   * Consulta el rango de verdad en vez de filtrar los últimos N movimientos,
+   * que dejaban por fuera cualquier día viejo aunque la tarjeta de Ventas
+   * (que sale de dailyStats) sí lo sumara.
+   */
+  async listSalesInRange(fromDayKey: string, toDayKey_: string): Promise<Movement[]> {
+    if (DEMO) {
+      const all = await demoBackend.listForExport(fromDayKey, toDayKey_)
+      return all.filter((m) => m.type === 'sale')
+    }
+    const snap = await getDocs(
+      query(
+        movementsRef(),
+        where('type', '==', 'sale'),
+        where('dayKey', '>=', fromDayKey),
+        where('dayKey', '<=', toDayKey_),
+        orderBy('dayKey', 'desc'),
+        orderBy('occurredAt', 'desc'),
+        limit(5000),
+      ),
+    )
+    return snap.docs.map(movementFromDoc)
+  },
+
+  /**
    * Busca ventas por nombre o celular del cliente, para devolver contra la
    * venta original en vez de "a ojo".
    *
