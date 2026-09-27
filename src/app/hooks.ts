@@ -132,6 +132,9 @@ export function useVariantsWithStock(): { variants: Variant[]; loading: boolean 
 interface MovementsFilter {
   type?: MovementType
   storeId?: StoreId
+  /** Rango de días (inclusive), filtrado en el servidor. */
+  fromDayKey?: string
+  toDayKey?: string
 }
 
 /** Historial paginado con "cargar más". */
@@ -141,35 +144,44 @@ export function useMovements(filter: MovementsFilter = {}) {
   const [hasMore, setHasMore] = useState(false)
   const [error, setError] = useState<unknown>(null)
   const cursor = useRef<QueryDocumentSnapshot<DocumentData> | undefined>(undefined)
+  // Cada carga lleva un número: si los filtros cambian mientras una página
+  // viene en camino, esa respuesta vieja se descarta en vez de pisar la nueva.
+  const requestId = useRef(0)
 
   const load = useCallback(
     async (reset: boolean) => {
+      const id = ++requestId.current
       setLoading(true)
       try {
         const page = await movementRepository.listPage({
           ...(filter.type ? { type: filter.type } : {}),
           ...(filter.storeId ? { storeId: filter.storeId } : {}),
+          ...(filter.fromDayKey ? { fromDayKey: filter.fromDayKey } : {}),
+          ...(filter.toDayKey ? { toDayKey: filter.toDayKey } : {}),
           ...(reset ? {} : { cursor: cursor.current }),
         })
+        if (id !== requestId.current) return
         cursor.current = page.cursor
         setHasMore(page.hasMore)
         setMovements((prev) => (reset ? page.movements : [...prev, ...page.movements]))
         setError(null)
       } catch (e) {
+        if (id !== requestId.current) return
         setError(e)
       } finally {
-        setLoading(false)
+        if (id === requestId.current) setLoading(false)
       }
     },
-    [filter.type, filter.storeId],
+    [filter.type, filter.storeId, filter.fromDayKey, filter.toDayKey],
   )
 
   // Recarga desde cero cuando cambian los filtros.
   useEffect(() => {
     cursor.current = undefined
+    setMovements([])
     void load(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filter.type, filter.storeId])
+  }, [filter.type, filter.storeId, filter.fromDayKey, filter.toDayKey])
 
   const loadMore = useCallback(() => {
     if (!loading && hasMore) void load(false)

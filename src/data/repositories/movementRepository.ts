@@ -48,6 +48,7 @@ import {
   locationDeltas,
 } from '@/domain/rules'
 import { bodegaKey, storeKey } from '@/domain/locations'
+import { allocateReturn } from '@/domain/deliveries'
 import { groupSales, matchesCustomer, normalize, type Sale } from '@/domain/sales'
 import { toDayKey } from '@/lib/format'
 import { DEMO } from '@/config'
@@ -114,6 +115,14 @@ export const movementRepository = {
     // es una devolución: se cuelga de la venta original en vez de crear otra.
     const saleId = meta?.saleId ?? doc(movementsRef()).id
 
+    // Retornos a bodega: de qué entregas pueden venir sus pares. Las consultas
+    // no caben dentro de la transacción (Firestore no admite consultas ahí),
+    // así que se buscan antes y adentro se RE-LEE cada entrega para repartir
+    // contra su `returnedQty` fresco.
+    const candidatesByLine = await Promise.all(
+      lines.map((draft) => (draft.type === 'retorno' ? loadReturnCandidates(draft) : Promise.resolve([]))),
+    )
+
     return runTransaction(db, async (tx) => {
       // Firestore exige TODAS las lecturas antes de cualquier escritura.
       const refs = lines.map((draft) => splitVariantId(draft.variantId))
@@ -121,6 +130,9 @@ export const movementRepository = {
         refs.map(({ productId, size }) =>
           Promise.all([tx.get(productRef(productId)), tx.get(variantRef(productId, size))]),
         ),
+      )
+      const candidateSnaps = await Promise.all(
+        candidatesByLine.map((candidates) => Promise.all(candidates.map((c) => tx.get(doc(movementsRef(), c.id))))),
       )
 
       const movements: Movement[] = []
@@ -215,7 +227,45 @@ export const movementRepository = {
         writes.push({ ...location, delta: totals.stockDelta, locDeltas })
       })
 
+      // Reparto de cada retorno contra sus entregas (ver `allocateReturn`). Se
+      // hace aquí, con las entregas recién leídas en la transacción: si dos
+      // retornos compiten por la misma entrega, Firestore reintenta y el
+      // segundo reparte contra lo que dejó el primero.
+      //
+      // Todas las entregas que toca la operación apuntan (`lastReturnId`) al
+      // MISMO asiento: el primer retorno del lote (de ese encargado). Las reglas lo buscan con
+      // getAfter, y Firestore limita cuántos documentos distintos puede
+      // consultar una regla por escritura: con un retorno distinto por entrega,
+      // un retorno de 19+ tallas se rechazaba entero.
+      const deliveryUpdates = new Map<string, { returnedQty: number; lastReturnId: string }>()
+      movements.forEach((movement, i) => {
+        if (movement.type !== 'retorno') return
+        const candidates = (candidatesByLine[i] ?? []).flatMap((c, j) => {
+          const fresh = candidateSnaps[i]?.[j]
+          // Una entrega que ya no existe (se vació el historial entre la
+          // consulta y la transacción) no se reparte: actualizarla tumbaría
+          // el retorno entero.
+          if (!fresh?.exists()) return []
+          const returnedQty = deliveryUpdates.get(c.id)?.returnedQty ?? Number(fresh.data().returnedQty ?? 0)
+          return [{ ...c, returnedQty }]
+        })
+        const allocations = allocateReturn(movement.quantity, candidates)
+        if (allocations.length === 0) return
+        // Ancla: el primer retorno del lote del MISMO encargado (la regla exige
+        // que coincida con el de la entrega). Hoy todo el lote es de uno solo.
+        const anchor = movements.find((m) => m.type === 'retorno' && m.targetUserId === movement.targetUserId) ?? movement
+        const anchorId = String(anchor.id)
+        movement.deliveryAllocations = allocations
+        for (const a of allocations) {
+          const before = candidates.find((c) => c.id === a.deliveryId)?.returnedQty ?? 0
+          deliveryUpdates.set(a.deliveryId, { returnedQty: before + a.quantity, lastReturnId: anchorId })
+        }
+      })
+
       // ── Escrituras ────────────────────────────────────────────────────────
+      deliveryUpdates.forEach((update, deliveryId) => {
+        tx.update(doc(movementsRef(), deliveryId), update)
+      })
       movements.forEach((movement) => {
         // El documento se arma campo por campo: `id` vive en la ruta, no dentro,
         // y Firestore rechaza cualquier propiedad con valor `undefined`.
@@ -444,18 +494,38 @@ export const movementRepository = {
     type?: MovementType
     storeId?: StoreId
     productId?: ProductId
+    /**
+     * Rango de días (inclusive). Se filtra EN EL SERVIDOR: filtrar en memoria
+     * una página de 40 dejaba vacío cualquier día viejo. Con fecha, el orden
+     * pasa a ser dayKey + occurredAt, que cubren los índices `dayKey+occurredAt`
+     * y `type+dayKey+occurredAt`; combinarla con storeId/productId pediría
+     * índices que no existen.
+     */
+    fromDayKey?: string
+    toDayKey?: string
     cursor?: QueryDocumentSnapshot<DocumentData> | undefined
   } = {}): Promise<{
     movements: Movement[]
     cursor: QueryDocumentSnapshot<DocumentData> | undefined
     hasMore: boolean
   }> {
-    if (DEMO) return demoBackend.listPage(options.type ? { type: options.type } : {})
+    if (DEMO) {
+      return demoBackend.listPage({
+        ...(options.type ? { type: options.type } : {}),
+        ...(options.fromDayKey ? { fromDayKey: options.fromDayKey } : {}),
+        ...(options.toDayKey ? { toDayKey: options.toDayKey } : {}),
+      })
+    }
     const pageSize = options.pageSize ?? 40
+    const byDay = !!(options.fromDayKey || options.toDayKey)
     const constraints = [
       ...(options.type ? [where('type', '==', options.type)] : []),
       ...(options.storeId ? [where('storeId', '==', options.storeId)] : []),
       ...(options.productId ? [where('productId', '==', options.productId)] : []),
+      ...(options.fromDayKey ? [where('dayKey', '>=', options.fromDayKey)] : []),
+      ...(options.toDayKey ? [where('dayKey', '<=', options.toDayKey)] : []),
+      // Firestore exige ordenar primero por el campo del rango.
+      ...(byDay ? [orderBy('dayKey', 'desc')] : []),
       orderBy('occurredAt', 'desc'),
       ...(options.cursor ? [startAfter(options.cursor)] : []),
       // Pedimos uno de más para saber si hay página siguiente sin contar todo.
@@ -487,6 +557,94 @@ export const movementRepository = {
       ),
     )
     return snap.docs.map(movementFromDoc)
+  },
+
+  /**
+   * Ventas de un rango de días, más reciente primero: la tabla de Ingresos.
+   * Consulta el rango de verdad en vez de filtrar los últimos N movimientos,
+   * que dejaban por fuera cualquier día viejo aunque la tarjeta de Ventas
+   * (que sale de dailyStats) sí lo sumara.
+   */
+  async listSalesInRange(fromDayKey: string, toDayKey_: string): Promise<Movement[]> {
+    if (DEMO) {
+      const all = await demoBackend.listForExport(fromDayKey, toDayKey_)
+      return all.filter((m) => m.type === 'sale')
+    }
+    const snap = await getDocs(
+      query(
+        movementsRef(),
+        where('type', '==', 'sale'),
+        where('dayKey', '>=', fromDayKey),
+        where('dayKey', '<=', toDayKey_),
+        orderBy('dayKey', 'desc'),
+        orderBy('occurredAt', 'desc'),
+        limit(5000),
+      ),
+    )
+    return snap.docs.map(movementFromDoc)
+  },
+
+  /**
+   * Movimientos que mira la pantalla de Locales, desde `fromDayKey` HASTA HOY
+   * (no hasta el "Hasta" del filtro): para saber cuánto de una entrega ya se
+   * vendió o volvió a bodega hacen falta las ventas y retornos POSTERIORES a
+   * ella. La pantalla recorta al rango elegido al mostrar. Antes se usaban los
+   * últimos 300 movimientos del sistema y todo lo viejo se perdía.
+   */
+  async listForLocales(fromDayKey: string): Promise<Movement[]> {
+    if (DEMO) {
+      const all = await demoBackend.listForExport(fromDayKey, '9999-12-31')
+      return all.filter((m) => LOCALES_TYPES.includes(m.type))
+    }
+    const snap = await getDocs(
+      query(
+        movementsRef(),
+        where('type', 'in', LOCALES_TYPES),
+        where('dayKey', '>=', fromDayKey),
+        orderBy('dayKey', 'desc'),
+        orderBy('occurredAt', 'desc'),
+        limit(5000),
+      ),
+    )
+    return snap.docs.map(movementFromDoc)
+  },
+
+  /**
+   * Lo que está PENDIENTE sin importar la fecha: entregas marcadas pendiente y
+   * ventas sin cobrar, más las ventas cobradas desde esas entregas y las
+   * devoluciones de esas ventas (para saber cuánto les queda). Un pendiente es
+   * plata en la calle: no puede desaparecer porque cae fuera del rango.
+   *
+   * Todas son consultas de igualdad sobre UN campo (sin orderBy), así que
+   * usan los índices automáticos y no necesitan índices compuestos. Solo las
+   * entregas tienen `deliveryPending`, solo las ventas `saleStatus` y
+   * `deliveryId`, así que no hace falta filtrar por tipo.
+   */
+  async listOpenPending(): Promise<Movement[]> {
+    if (DEMO) return demoBackend.listOpenPending()
+    const [deliveriesSnap, salesSnap] = await Promise.all([
+      getDocs(query(movementsRef(), where('deliveryPending', '==', true))),
+      getDocs(query(movementsRef(), where('saleStatus', '==', 'pendiente'))),
+    ])
+    const deliveries = deliveriesSnap.docs.map(movementFromDoc)
+    const pendingSales = salesSnap.docs.map(movementFromDoc)
+
+    const deliveryIds = deliveries.map((d) => d.id)
+    const linkedSales = (
+      await Promise.all(
+        chunk(deliveryIds, 30).map((ids) => getDocs(query(movementsRef(), where('deliveryId', 'in', ids)))),
+      )
+    ).flatMap((snap) => snap.docs.map(movementFromDoc))
+
+    // Devoluciones de esas ventas: comparten el `saleId` (o el id) de la venta.
+    const saleIds = [...new Set([...pendingSales, ...linkedSales].map((m) => m.saleId ?? m.id))]
+    const returns = (
+      await Promise.all(chunk(saleIds, 30).map((ids) => getDocs(query(movementsRef(), where('saleId', 'in', ids)))))
+    )
+      .flatMap((snap) => snap.docs.map(movementFromDoc))
+      .filter((m) => m.type === 'return')
+
+    return [...deliveries, ...pendingSales, ...linkedSales, ...returns]
   },
 
   /**
@@ -574,17 +732,6 @@ export const movementRepository = {
   },
 
   /**
-   * Últimos movimientos, sin filtrar por tipo en el servidor (así no hace falta
-   * índice compuesto). Quien llama filtra en memoria. Para la vista de Locales,
-   * que mira las salidas recientes hacia cada local.
-   */
-  async listRecent(max = 300): Promise<Movement[]> {
-    if (DEMO) return demoBackend.listRecent(max)
-    const snap = await getDocs(query(movementsRef(), orderBy('occurredAt', 'desc'), limit(max)))
-    return snap.docs.map(movementFromDoc)
-  },
-
-  /**
    * Vacía TODO el historial: borra el libro mayor de movimientos y reinicia el
    * dashboard (dailyStats). Acción de la DUEÑA para "empezar limpio". No toca el
    * stock del inventario (es una proyección aparte). Es IRREVERSIBLE.
@@ -612,6 +759,76 @@ export const movementRepository = {
     const stats = await deleteAll(dailyStatsCol())
     return { movements, stats }
   },
+}
+
+/**
+ * Entregas de las que puede venir un retorno: salidas de la MISMA talla al
+ * MISMO encargado y hacia el MISMO local del que sale el retorno, con cuántos
+ * pares lleva cobrados cada una (ventas con `deliveryId`, netas de las
+ * devoluciones de esas ventas). Todas las consultas son de igualdad, así que
+ * no necesitan índices compuestos.
+ */
+async function loadReturnCandidates(
+  draft: MovementDraft,
+): Promise<{ id: string; occurredAt: Date; quantity: number; returnedQty: number; soldQty: number }[]> {
+  if (!draft.targetUserId || !draft.fromLocation) return []
+  const snap = await getDocs(
+    query(
+      movementsRef(),
+      where('type', '==', 'salida'),
+      where('variantId', '==', draft.variantId),
+      where('targetUserId', '==', draft.targetUserId),
+    ),
+  )
+  // Las ya retornadas por completo no pueden recibir nada: se descartan antes
+  // de consultar sus ventas y de re-leerlas en la transacción.
+  const deliveries = snap.docs
+    .map(movementFromDoc)
+    .filter((m) => m.toLocation === draft.fromLocation && (m.returnedQty ?? 0) < m.quantity)
+  if (deliveries.length === 0) return []
+
+  const ids = deliveries.map((d) => String(d.id))
+  const sales = (
+    await Promise.all(chunk(ids, 30).map((part) => getDocs(query(movementsRef(), where('deliveryId', 'in', part)))))
+  )
+    .flatMap((s) => s.docs.map(movementFromDoc))
+    .filter((m) => m.type === 'sale')
+  const soldBySale = new Map<string, { deliveryId: string; variantId: string }>()
+  const sold = new Map<string, number>()
+  for (const m of sales) {
+    if (!m.deliveryId) continue
+    soldBySale.set(m.saleId ?? String(m.id), { deliveryId: m.deliveryId, variantId: String(m.variantId) })
+    sold.set(m.deliveryId, (sold.get(m.deliveryId) ?? 0) + m.quantity)
+  }
+  const saleIds = [...soldBySale.keys()]
+  const returns = (
+    await Promise.all(chunk(saleIds, 30).map((part) => getDocs(query(movementsRef(), where('saleId', 'in', part)))))
+  )
+    .flatMap((s) => s.docs.map(movementFromDoc))
+    .filter((m) => m.type === 'return')
+  for (const r of returns) {
+    const origin = soldBySale.get(r.saleId ?? '')
+    if (!origin || origin.variantId !== String(r.variantId)) continue
+    sold.set(origin.deliveryId, (sold.get(origin.deliveryId) ?? 0) - r.quantity)
+  }
+
+  return deliveries.map((d) => ({
+    id: String(d.id),
+    occurredAt: d.occurredAt,
+    quantity: d.quantity,
+    returnedQty: d.returnedQty ?? 0,
+    soldQty: sold.get(String(d.id)) ?? 0,
+  }))
+}
+
+/** Tipos que usa la pantalla de Locales: ventas, devoluciones, entregas y retornos. */
+const LOCALES_TYPES: MovementType[] = ['sale', 'return', 'salida', 'retorno']
+
+/** Parte una lista en trozos: un `in` de Firestore admite hasta 30 valores. */
+function chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = []
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size))
+  return out
 }
 
 /**

@@ -12,8 +12,8 @@ import { statsRepository } from '@/data/repositories/statsRepository'
 import { expenseRepository } from '@/data/repositories/expenseRepository'
 import { movementLocalId } from '@/domain/rules'
 import { matchesFields, matchesMovement } from '@/domain/sales'
-import { formatLongDate, formatMoney, formatMoneyInput, formatShortDate, parseMoneyInput, toDayKey } from '@/lib/format'
-import { RoleBadge, storeCodeOf } from './_shared'
+import { formatLongDate, formatMoney, formatMoneyInput, formatShortDate, isPlausibleDayKey, parseMoneyInput, toDayKey } from '@/lib/format'
+import { FilterDrawer, RoleBadge, storeCodeOf } from './_shared'
 import { SearchBox } from './InventoryScreen'
 import { Icon } from '@/ui/Icon'
 import { Money } from '@/ui/Money'
@@ -62,13 +62,9 @@ export function DashboardScreen() {
   // debe poder crear/editar/eliminar egresos.
   const canManageExpenses = user?.role === 'socio'
 
-  // Ingresos (ventas) y egresos (gastos a mano) para las tablas.
-  const [movs, setMovs] = useState<Movement[]>([])
+  // Egresos (gastos a mano) para su tabla; los ingresos se cargan por rango abajo.
   const [expenses, setExpenses] = useState<Expense[]>([])
   const [tab, setTab] = useState<'ingresos' | 'egresos'>('ingresos')
-  useEffect(() => {
-    movementRepository.listRecent().then(setMovs).catch(() => undefined)
-  }, [])
   useEffect(() => expenseRepository.subscribe(setExpenses), [])
 
   // Rango de fechas de las tarjetas de resumen (por defecto, solo hoy). Se
@@ -78,22 +74,60 @@ export function DashboardScreen() {
   const [dateFrom, setDateFrom] = useState(todayKey)
   const [dateTo, setDateTo] = useState(todayKey)
   const [rangeStats, setRangeStats] = useState<DailyStats[]>([])
+  // Local de la tabla de Ingresos. Vive aquí y no en la pestaña para ir en el
+  // mismo desplegable de filtros que las fechas.
+  const [storeId, setStoreId] = useState('')
   useEffect(() => {
     statsRepository.listRange(dateFrom, dateTo).then(setRangeStats).catch(() => undefined)
   }, [dateFrom, dateTo])
   const summary = useMemo(() => sumRangeStats(rangeStats), [rangeStats])
   const isToday = dateFrom === todayKey && dateTo === todayKey
+  // Versión corta del rango para la línea del desplegable de filtros en móvil.
+  const shortRangeLabel =
+    dateFrom === dateTo
+      ? formatShortDate(dayKeyToDate(dateFrom))
+      : `${formatShortDate(dayKeyToDate(dateFrom))} – ${formatShortDate(dayKeyToDate(dateTo))}`
   const rangeLabel = isToday
     ? `Hoy · ${formatLongDate(new Date())}`
     : dateFrom === dateTo
       ? formatLongDate(dayKeyToDate(dateFrom))
       : `${formatShortDate(dayKeyToDate(dateFrom))} – ${formatShortDate(dayKeyToDate(dateTo))}`
 
-  // Las tablas de abajo (Ingresos/Egresos) respetan el mismo rango.
-  const incomes = useMemo(
-    () => movs.filter((m) => m.type === 'sale' && m.dayKey >= dateFrom && m.dayKey <= dateTo),
-    [movs, dateFrom, dateTo],
-  )
+  // Las tablas de abajo (Ingresos/Egresos) respetan el mismo rango. Las ventas
+  // se piden a Firestore POR RANGO: antes se filtraban los últimos 300
+  // movimientos y un día viejo salía vacío aunque la tarjeta de Ventas lo sumara.
+  const [incomes, setIncomes] = useState<Movement[]>([])
+  const [incomesState, setIncomesState] = useState<IncomesState>('loading')
+  useEffect(() => {
+    let stale = false // si el rango cambia antes de que llegue la respuesta, se descarta
+    // Se vacía de una: si no, mientras carga se verían las ventas del rango
+    // anterior bajo la etiqueta del nuevo.
+    setIncomes([])
+    setIncomesState('loading')
+    // Al escribir el año a mano, cada tecla deja una fecha válida (0002-09-14,
+    // 0020-09-14…) que pediría TODO el histórico. Se espera a que termine de
+    // escribir y se ignoran años absurdos: con el plan Spark cada consulta cuenta.
+    if (!isPlausibleDayKey(dateFrom) || !isPlausibleDayKey(dateTo)) return
+    const timer = window.setTimeout(() => {
+      movementRepository
+        .listSalesInRange(dateFrom, dateTo)
+        .then((sales) => {
+          if (stale) return
+          setIncomes(sales)
+          setIncomesState('ok')
+        })
+        .catch((e: unknown) => {
+          if (stale) return
+          // El mensaje de Firestore trae el enlace para crear un índice faltante.
+          console.error('No se pudieron cargar las ventas del rango', e)
+          setIncomesState('error')
+        })
+    }, 400)
+    return () => {
+      stale = true
+      window.clearTimeout(timer)
+    }
+  }, [dateFrom, dateTo])
   const expensesInRange = useMemo(
     () => expenses.filter((e) => e.dayKey >= dateFrom && e.dayKey <= dateTo),
     [expenses, dateFrom, dateTo],
@@ -111,28 +145,41 @@ export function DashboardScreen() {
         {user ? <RoleBadge role={user.role} /> : null}
       </div>
 
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-        <label style={dateFieldStyle}>
-          <span style={dateLabelStyle}>Desde</span>
-          <input type="date" value={dateFrom} max={dateTo} onChange={(e) => setDateFrom(e.target.value)} style={dateInputStyle} />
-        </label>
-        <label style={dateFieldStyle}>
-          <span style={dateLabelStyle}>Hasta</span>
-          <input type="date" value={dateTo} min={dateFrom} max={todayKey} onChange={(e) => setDateTo(e.target.value)} style={dateInputStyle} />
-        </label>
-        {!isToday ? (
-          <button
-            onClick={() => {
-              setDateFrom(todayKey)
-              setDateTo(todayKey)
-            }}
-            className="iw-press"
-            style={{ cursor: 'pointer', background: 'transparent', border: 'none', color: 'var(--text-muted)', font: '700 12.5px var(--font-body)', padding: '9px 4px' }}
-          >
-            Volver a hoy
-          </button>
-        ) : null}
-      </div>
+      <FilterDrawer
+        summary={[isToday ? 'Hoy' : shortRangeLabel, ...(tab === 'ingresos' && storeId ? [`Local ${storeCodeOf(stores, storeId)}`] : [])].join(' · ')}
+        active={!isToday || (tab === 'ingresos' && storeId !== '')}
+      >
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+          <label style={dateFieldStyle}>
+            <span style={dateLabelStyle}>Desde</span>
+            <input type="date" value={dateFrom} max={dateTo} onChange={(e) => setDateFrom(e.target.value)} style={dateInputStyle} />
+          </label>
+          <label style={dateFieldStyle}>
+            <span style={dateLabelStyle}>Hasta</span>
+            <input type="date" value={dateTo} min={dateFrom} max={todayKey} onChange={(e) => setDateTo(e.target.value)} style={dateInputStyle} />
+          </label>
+          {tab === 'ingresos' ? (
+            // Solo filtra la TABLA de ventas: las tarjetas de arriba suman todos
+            // los locales (la de Ventas ya trae el desglose por local).
+            <label style={dateFieldStyle}>
+              <span style={dateLabelStyle}>Local (tabla de ventas)</span>
+              <StoreSelect stores={stores} value={storeId} onChange={setStoreId} />
+            </label>
+          ) : null}
+          {!isToday ? (
+            <button
+              onClick={() => {
+                setDateFrom(todayKey)
+                setDateTo(todayKey)
+              }}
+              className="iw-press"
+              style={{ cursor: 'pointer', background: 'transparent', border: 'none', color: 'var(--text-muted)', font: '700 12.5px var(--font-body)', padding: '9px 4px' }}
+            >
+              Volver a hoy
+            </button>
+          ) : null}
+        </div>
+      </FilterDrawer>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 12 }}>
         <div style={{ background: 'var(--iw-plum)', color: '#fff', borderRadius: 'var(--radius-lg)', padding: '16px 18px', boxShadow: 'var(--shadow-md)' }}>
@@ -213,7 +260,7 @@ export function DashboardScreen() {
       </div>
 
       {tab === 'ingresos' ? (
-        <IncomeTab incomes={incomes} stores={stores} />
+        <IncomeTab incomes={incomes} state={incomesState} stores={stores} storeId={storeId} />
       ) : (
         <ExpenseTab
           expenses={expensesInRange}
@@ -228,8 +275,19 @@ export function DashboardScreen() {
 /** Tabla de INGRESOS: las ventas (concepto, detalle, cantidad, valor, fecha,
  *  local, vendedor), de más reciente a más antigua. Se puede filtrar por local
  *  y por texto (zapato, cliente o vendedor). */
-function IncomeTab({ incomes, stores }: { incomes: Movement[]; stores: Store[] }) {
-  const [storeId, setStoreId] = useState('')
+type IncomesState = 'loading' | 'ok' | 'error'
+
+function IncomeTab({
+  incomes,
+  state,
+  stores,
+  storeId,
+}: {
+  incomes: Movement[]
+  state: IncomesState
+  stores: Store[]
+  storeId: string
+}) {
   const [search, setSearch] = useState('')
 
   const rows = useMemo(
@@ -245,14 +303,22 @@ function IncomeTab({ incomes, stores }: { incomes: Movement[]; stores: Store[] }
         search={search}
         onSearch={setSearch}
         placeholder="Zapato, cliente o vendedor…"
-        stores={stores}
-        storeId={storeId}
-        onStore={setStoreId}
       />
       <SummaryBar label={`${rows.length} ${rows.length === 1 ? 'venta' : 'ventas'} · ${units} pares`} value={<Money value={total} />} />
       <TableCard headers={['Concepto', 'Detalle', 'Cant.', 'Valor', 'Fecha', 'Local', 'Vendedor']}>
         {rows.length === 0 ? (
-          <EmptyRow cols={7} text={incomes.length === 0 ? 'Todavía no hay ventas registradas.' : 'Ninguna venta coincide con el filtro.'} />
+          <EmptyRow
+            cols={7}
+            text={
+              state === 'loading'
+                ? 'Cargando ventas…'
+                : state === 'error'
+                  ? 'No se pudieron cargar las ventas de estas fechas. Vuelve a elegir el rango en un momento; si sigue fallando, avísale al administrador.'
+                  : incomes.length === 0
+                    ? 'No hay ventas registradas en estas fechas.'
+                    : 'Ninguna venta coincide con el filtro.'
+            }
+          />
         ) : (
           rows.map((m) => (
             <tr key={m.id} style={{ borderTop: '1px solid var(--border-subtle)' }}>
@@ -281,56 +347,49 @@ const matchesStore = (m: Movement, storeId: string): boolean =>
   !storeId || movementLocalId(m) === storeId
 
 /**
- * Buscador + selector de local. El buscador es el MISMO `SearchBox` del
- * inventario y del historial, para que las tres pantallas se busquen igual.
+ * Buscador. Es el MISMO `SearchBox` del inventario y del historial, para que
+ * las tres pantallas se busquen igual. Queda siempre a la vista: es el filtro
+ * que más se usa, así que no va dentro del desplegable.
  */
 function FilterBar({
   search,
   onSearch,
   placeholder,
-  stores,
-  storeId,
-  onStore,
 }: {
   search: string
   onSearch: (value: string) => void
   placeholder: string
-  stores?: Store[]
-  storeId?: string
-  onStore?: (value: string) => void
 }) {
+  return <SearchBox value={search} onChange={onSearch} placeholder={placeholder} />
+}
+
+/** Selector de local de la tabla de Ingresos (va en el desplegable de filtros). */
+function StoreSelect({ stores, value, onChange }: { stores: Store[]; value: string; onChange: (value: string) => void }) {
   return (
-    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-      <div style={{ flex: 1, minWidth: 180 }}>
-        <SearchBox value={search} onChange={onSearch} placeholder={placeholder} />
-      </div>
-      {stores && onStore ? (
-        <select
-          value={storeId ?? ''}
-          onChange={(e) => onStore(e.target.value)}
-          style={{
-            height: 44,
-            padding: '0 12px',
-            minWidth: 150,
-            border: '1.5px solid var(--border-subtle)',
-            borderRadius: 'var(--radius-md)',
-            font: '600 14px var(--font-body)',
-            background: 'var(--surface-card)',
-            color: 'var(--text-primary)',
-            cursor: 'pointer',
-            outline: 'none',
-            boxSizing: 'border-box',
-          }}
-        >
-          <option value="">Todos los locales</option>
-          {stores.map((s) => (
-            <option key={s.id} value={s.id}>
-              Local {s.code}
-            </option>
-          ))}
-        </select>
-      ) : null}
-    </div>
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      style={{
+        height: 40,
+        padding: '0 12px',
+        minWidth: 150,
+        border: '1.5px solid var(--border-subtle)',
+        borderRadius: 'var(--radius-md)',
+        font: '600 14px var(--font-body)',
+        background: 'var(--surface-card)',
+        color: 'var(--text-primary)',
+        cursor: 'pointer',
+        outline: 'none',
+        boxSizing: 'border-box',
+      }}
+    >
+      <option value="">Todos los locales</option>
+      {stores.map((s) => (
+        <option key={s.id} value={s.id}>
+          Local {s.code}
+        </option>
+      ))}
+    </select>
   )
 }
 

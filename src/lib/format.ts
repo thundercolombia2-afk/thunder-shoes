@@ -78,6 +78,15 @@ const timeFormatter = new Intl.DateTimeFormat('es-CO', {
 
 export const formatTime = (date: Date): string => timeFormatter.format(date)
 
+/**
+ * Fecha completa (AAAA-MM-DD) y de un año que tenga sentido para el negocio.
+ * Al escribir el año a mano en un <input type="date">, cada tecla deja una
+ * fecha válida (0002-09-14, 0020-09-14…) que pediría TODO el histórico: los
+ * filtros que consultan Firestore por fecha la usan para no gastar cuota.
+ */
+export const isPlausibleDayKey = (dayKey: string): boolean =>
+  /^\d{4}-\d{2}-\d{2}$/.test(dayKey) && dayKey >= '2020-01-01'
+
 /** Días hacia atrás desde hoy, como dayKeys ordenados de más viejo a más nuevo. */
 export function recentDayKeys(count: number, from: Date = new Date()): string[] {
   const keys: string[] = []

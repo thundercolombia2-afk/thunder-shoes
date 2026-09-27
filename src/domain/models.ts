@@ -166,6 +166,12 @@ export interface VariantWithProduct {
  * `salida`, `retorno` y `traslado` son TRASLADOS: mueven stock entre dos
  * ubicaciones sin cambiar el total del sistema.
  */
+/** Pares de un retorno que se descontaron de una entrega (salida) concreta. */
+export interface DeliveryAllocation {
+  deliveryId: string
+  quantity: number
+}
+
 export const MOVEMENT_TYPES = ['sale', 'purchase', 'return', 'salida', 'retorno', 'traslado', 'baja'] as const
 export type MovementType = (typeof MOVEMENT_TYPES)[number]
 
@@ -311,6 +317,23 @@ export interface Movement {
   deliveryPendingAt?: Date
   deliveryPendingBy?: string
   deliveryPendingByUid?: UserId
+
+  /**
+   * Solo en salidas (entregas): cuántos de sus pares ya volvieron a bodega. Lo
+   * suma cada retorno al registrarse (ver `allocateReturn`), así la entrega
+   * sabe cuánto le queda en el local sin recorrer el libro mayor. Ausente = 0.
+   * `lastReturnId` es el retorno (el primero del lote) que lo movió por última
+   * vez: las reglas de Firestore lo usan para exigir que ese retorno se
+   * escriba en la misma transacción.
+   */
+  returnedQty?: number
+  lastReturnId?: string
+
+  /**
+   * Solo en retornos: de qué entregas salieron los pares que volvieron a
+   * bodega. Es el rastro del reparto que movió `returnedQty` en cada entrega.
+   */
+  deliveryAllocations?: DeliveryAllocation[]
 
   /**
    * Id de la SALIDA de bodega que originó esta venta. Lo llevan las ventas
