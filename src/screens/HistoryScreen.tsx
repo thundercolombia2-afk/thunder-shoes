@@ -21,9 +21,9 @@ import {
 } from '@/domain/rules'
 import { matchesMovement } from '@/domain/sales'
 import { MOVEMENT_TYPES, type Movement, type MovementType } from '@/domain/models'
-import { formatMoney, formatShortDate, recentDayKeys, toDayKey } from '@/lib/format'
+import { formatMoney, formatShortDate, isPlausibleDayKey, recentDayKeys } from '@/lib/format'
 import { downloadCsv, toCsv } from '@/lib/csv'
-import { bodegaLabel, movementPlace, RoleBadge, SaleStatusChip, type MovementPlace } from './_shared'
+import { bodegaLabel, FilterDrawer, movementPlace, RoleBadge, SaleStatusChip, type MovementPlace } from './_shared'
 import { SearchBox } from './InventoryScreen'
 import { Icon } from '@/ui/Icon'
 
@@ -54,6 +54,10 @@ const dateInputStyle: React.CSSProperties = {
   color: 'var(--text-primary)',
   font: '600 13px var(--font-body)',
 }
+/** "14 sep" a partir de "2026-09-14"; si la fecha está a medio escribir, tal cual. */
+const shortDay = (dayKey: string): string =>
+  isPlausibleDayKey(dayKey) ? formatShortDate(new Date(`${dayKey}T12:00:00`)) : dayKey
+
 const selectStyle: React.CSSProperties = {
   height: 40,
   padding: '0 10px',
@@ -96,9 +100,14 @@ export function HistoryScreen() {
       ]
     : TYPE_FILTERS
 
-  const { movements, loading, hasMore, loadMore } = useMovements(
-    typeFilter === 'all' ? {} : { type: typeFilter },
-  )
+  // Las fechas se filtran EN EL SERVIDOR: filtrar en memoria la página de 40
+  // más recientes dejaba vacío cualquier día viejo. Una fecha a medio escribir
+  // (año 0002…) no se manda: pediría todo el histórico.
+  const { movements, loading, hasMore, loadMore } = useMovements({
+    ...(typeFilter === 'all' ? {} : { type: typeFilter }),
+    ...(isPlausibleDayKey(dateFrom) ? { fromDayKey: dateFrom } : {}),
+    ...(isPlausibleDayKey(dateTo) ? { toDayKey: dateTo } : {}),
+  })
 
   const rows = useMemo(
     () =>
@@ -107,12 +116,26 @@ export function HistoryScreen() {
           // El bodeguero solo ve lo que ÉL mismo entregó o recibió.
           (!isBodeguero || m.userId === user?.id) &&
           (!userFilter || m.userId === userFilter) &&
-          (!dateFrom || toDayKey(m.occurredAt) >= dateFrom) &&
-          (!dateTo || toDayKey(m.occurredAt) <= dateTo) &&
           matchesMovement(m, search),
       ),
-    [movements, search, isBodeguero, user?.id, userFilter, dateFrom, dateTo],
+    [movements, search, isBodeguero, user?.id, userFilter],
   )
+
+  // Una línea para el desplegable de filtros en móvil: qué se está mirando.
+  const typeLabel = filters.find((f) => f.value === typeFilter)?.label ?? 'Todos'
+  const dateLabel =
+    dateFrom && dateTo
+      ? dateFrom === dateTo
+        ? shortDay(dateFrom)
+        : `${shortDay(dateFrom)} – ${shortDay(dateTo)}`
+      : dateFrom
+        ? `desde ${shortDay(dateFrom)}`
+        : dateTo
+          ? `hasta ${shortDay(dateTo)}`
+          : ''
+  const userLabel = userFilter ? (team.find((t) => t.id === userFilter)?.name ?? '') : ''
+  const filterSummary = [typeLabel, dateLabel, userLabel].filter(Boolean).join(' · ')
+  const filterActive = typeFilter !== filters[0]?.value || !!dateFrom || !!dateTo || !!userFilter
 
   const exportCsv = async () => {
     setExporting(true)
@@ -208,73 +231,76 @@ export function HistoryScreen() {
 
       {wiping ? <WipeHistoryDialog onClose={() => setWiping(false)} /> : null}
 
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        <div style={{ flex: 1, minWidth: 180 }}>
-          <SearchBox value={search} onChange={setSearch} placeholder="Referencia o código…" />
-        </div>
-        {filters.map((f) => {
-          const on = typeFilter === f.value
-          return (
-            <button
-              key={f.value}
-              onClick={() => setTypeFilter(f.value)}
-              className="iw-press"
-              style={{
-                cursor: 'pointer',
-                background: on ? 'var(--iw-plum)' : 'var(--surface-card)',
-                color: on ? '#fff' : 'var(--text-secondary)',
-                border: `1.5px solid ${on ? 'var(--iw-plum)' : 'var(--border-subtle)'}`,
-                borderRadius: 'var(--radius-pill)',
-                padding: '9px 15px',
-                font: '700 13px var(--font-body)',
-              }}
-            >
-              {f.label}
-            </button>
-          )
-        })}
-      </div>
+      <SearchBox value={search} onChange={setSearch} placeholder="Referencia o código…" />
 
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-        <label style={dateFieldStyle}>
-          <span style={dateLabelStyle}>Desde</span>
-          <input type="date" value={dateFrom} max={dateTo || undefined} onChange={(e) => setDateFrom(e.target.value)} style={dateInputStyle} />
-        </label>
-        <label style={dateFieldStyle}>
-          <span style={dateLabelStyle}>Hasta</span>
-          <input type="date" value={dateTo} min={dateFrom || undefined} onChange={(e) => setDateTo(e.target.value)} style={dateInputStyle} />
-        </label>
-        {!isBodeguero ? (
-          <select value={userFilter} onChange={(e) => setUserFilter(e.target.value)} style={selectStyle}>
-            <option value="">Todos los usuarios</option>
-            {team.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name}
-              </option>
-            ))}
-          </select>
-        ) : null}
-        {dateFrom || dateTo || userFilter ? (
-          <button
-            onClick={() => {
-              setDateFrom('')
-              setDateTo('')
-              setUserFilter('')
-            }}
-            className="iw-press"
-            style={{
-              cursor: 'pointer',
-              background: 'transparent',
-              border: 'none',
-              color: 'var(--text-muted)',
-              font: '700 12.5px var(--font-body)',
-              padding: '9px 4px',
-            }}
-          >
-            Limpiar fecha/usuario
-          </button>
-        ) : null}
-      </div>
+      <FilterDrawer summary={filterSummary} active={filterActive}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {filters.map((f) => {
+              const on = typeFilter === f.value
+              return (
+                <button
+                  key={f.value}
+                  onClick={() => setTypeFilter(f.value)}
+                  className="iw-press"
+                  style={{
+                    cursor: 'pointer',
+                    background: on ? 'var(--iw-plum)' : 'var(--surface-card)',
+                    color: on ? '#fff' : 'var(--text-secondary)',
+                    border: `1.5px solid ${on ? 'var(--iw-plum)' : 'var(--border-subtle)'}`,
+                    borderRadius: 'var(--radius-pill)',
+                    padding: '9px 15px',
+                    font: '700 13px var(--font-body)',
+                  }}
+                >
+                  {f.label}
+                </button>
+              )
+            })}
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <label style={dateFieldStyle}>
+              <span style={dateLabelStyle}>Desde</span>
+              <input type="date" value={dateFrom} max={dateTo || undefined} onChange={(e) => setDateFrom(e.target.value)} style={dateInputStyle} />
+            </label>
+            <label style={dateFieldStyle}>
+              <span style={dateLabelStyle}>Hasta</span>
+              <input type="date" value={dateTo} min={dateFrom || undefined} onChange={(e) => setDateTo(e.target.value)} style={dateInputStyle} />
+            </label>
+            {!isBodeguero ? (
+              <select value={userFilter} onChange={(e) => setUserFilter(e.target.value)} style={selectStyle}>
+                <option value="">Todos los usuarios</option>
+                {team.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            ) : null}
+            {dateFrom || dateTo || userFilter ? (
+              <button
+                onClick={() => {
+                  setDateFrom('')
+                  setDateTo('')
+                  setUserFilter('')
+                }}
+                className="iw-press"
+                style={{
+                  cursor: 'pointer',
+                  background: 'transparent',
+                  border: 'none',
+                  color: 'var(--text-muted)',
+                  font: '700 12.5px var(--font-body)',
+                  padding: '9px 4px',
+                }}
+              >
+                Limpiar fecha/usuario
+              </button>
+            ) : null}
+          </div>
+        </div>
+      </FilterDrawer>
 
       <div
         style={{

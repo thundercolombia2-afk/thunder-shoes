@@ -215,7 +215,8 @@ service cloud.firestore {
       //    porque la plata de una venta por transportadora entra días después;
       //  · la bandera "pendiente" de una ENTREGA, que solo puede tocar el
       //    ENCARGADO (targetUserId) al que bodega se la asignó.
-      allow update: if hasProfile() && (onlySaleStatusChanged() || onlyDeliveryPendingChanged());
+      allow update: if hasProfile()
+        && (onlySaleStatusChanged() || onlyDeliveryPendingChanged() || onlyReturnedQtyChanged());
       // Borrarlo solo lo puede hacer la DUEÑA (vaciar historial para empezar
       // limpio); ningún empleado ni socio normal.
       allow delete: if isOwner();
@@ -234,6 +235,33 @@ service cloud.firestore {
         && request.resource.data.saleStatus != resource.data.get('saleStatus', 'cobrado')
         && request.resource.data.saleStatusByUid == uid()
         && request.resource.data.saleStatusAt == request.time;
+    }
+
+    // Cuántos pares de una ENTREGA ya volvieron a bodega. Lo mueve el retorno al
+    // registrarse (en la MISMA transacción que crea el asiento del retorno) y
+    // solo hacia arriba, sin pasarse de lo entregado. `lastReturnId` es el
+    // PRIMER retorno del lote, el mismo para todas las entregas que toca: así
+    // la regla consulta un solo documento aunque el retorno tenga 60 tallas (el
+    // tope de documentos distintos por escritura es pequeño). La DUEÑA puede fijarlo a
+    // cualquier valor válido: es quien corre el script de relleno
+    // (`npm run backfill:returns`), que lo recalcula desde el libro mayor.
+    function onlyReturnedQtyChanged() {
+      let next = request.resource.data;
+      return resource.data.type == 'salida'
+        && next.diff(resource.data).affectedKeys().hasOnly(['returnedQty', 'lastReturnId'])
+        && next.returnedQty is int
+        && next.returnedQty >= 0
+        && next.returnedQty <= resource.data.quantity
+        && (isOwner() || returnedByNewRetorno(next));
+    }
+
+    function returnedByNewRetorno(next) {
+      let retornoPath = /databases/$(database)/documents/movements/$(next.lastReturnId);
+      return next.returnedQty > resource.data.get('returnedQty', 0)
+        && next.lastReturnId is string
+        && !exists(retornoPath)
+        && getAfter(retornoPath).data.type == 'retorno'
+        && getAfter(retornoPath).data.get('targetUserId', '') == resource.data.get('targetUserId', '');
     }
 
     // Solo el ENCARGADO de la entrega (targetUserId) puede tocar su bandera de

@@ -12,7 +12,7 @@ import { statsRepository } from '@/data/repositories/statsRepository'
 import { expenseRepository } from '@/data/repositories/expenseRepository'
 import { movementLocalId } from '@/domain/rules'
 import { matchesFields, matchesMovement } from '@/domain/sales'
-import { formatLongDate, formatMoney, formatMoneyInput, formatShortDate, parseMoneyInput, toDayKey } from '@/lib/format'
+import { formatLongDate, formatMoney, formatMoneyInput, formatShortDate, isPlausibleDayKey, parseMoneyInput, toDayKey } from '@/lib/format'
 import { FilterDrawer, RoleBadge, storeCodeOf } from './_shared'
 import { SearchBox } from './InventoryScreen'
 import { Icon } from '@/ui/Icon'
@@ -276,10 +276,6 @@ export function DashboardScreen() {
  *  local, vendedor), de más reciente a más antigua. Se puede filtrar por local
  *  y por texto (zapato, cliente o vendedor). */
 type IncomesState = 'loading' | 'ok' | 'error'
-
-/** Fecha completa (AAAA-MM-DD) y de un año que tenga sentido para el negocio. */
-const isPlausibleDayKey = (dayKey: string): boolean =>
-  /^\d{4}-\d{2}-\d{2}$/.test(dayKey) && dayKey >= '2020-01-01'
 
 function IncomeTab({
   incomes,

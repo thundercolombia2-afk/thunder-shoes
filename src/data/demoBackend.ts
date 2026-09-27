@@ -45,6 +45,7 @@ import { bodegaKey, storeKey } from '@/domain/locations'
 import { recentDayKeys, toDayKey } from '@/lib/format'
 import type { EditProductInput, NewProductInput, ProductRow } from './repositories/catalogRepository'
 import { groupSales, matchesCustomer, type Sale } from '@/domain/sales'
+import { allocateReturn } from '@/domain/deliveries'
 import type { MovementActor } from './repositories/movementRepository'
 
 // ── PRNG determinista (datos estables entre recargas) ────────────────────────
@@ -142,6 +143,52 @@ PRODUCT_DEFS.forEach(([brand, name, sku, price], i) => {
 })
 
 const movements: Movement[] = []
+
+/** Igual que el backend real: reparte el retorno contra sus entregas y suma `returnedQty`. */
+function allocateDemoReturn(retorno: Movement): void {
+  if (!retorno.targetUserId || !retorno.fromLocation) return
+  const deliveries = movements.filter(
+    (m) =>
+      m.type === 'salida' &&
+      String(m.variantId) === String(retorno.variantId) &&
+      m.targetUserId === retorno.targetUserId &&
+      m.toLocation === retorno.fromLocation,
+  )
+  const soldOf = (deliveryId: string) => {
+    const sales = movements.filter(
+      (m) => m.type === 'sale' && m.deliveryId === deliveryId && String(m.variantId) === String(retorno.variantId),
+    )
+    const saleIds = new Set(sales.map((m) => m.saleId ?? String(m.id)))
+    const returned = movements
+      .filter(
+        (m) =>
+          m.type === 'return' &&
+          m.saleId !== undefined &&
+          saleIds.has(m.saleId) &&
+          String(m.variantId) === String(retorno.variantId),
+      )
+      .reduce((sum, m) => sum + m.quantity, 0)
+    return sales.reduce((sum, m) => sum + m.quantity, 0) - returned
+  }
+  const allocations = allocateReturn(
+    retorno.quantity,
+    deliveries.map((d) => ({
+      id: String(d.id),
+      occurredAt: d.occurredAt,
+      quantity: d.quantity,
+      returnedQty: d.returnedQty ?? 0,
+      soldQty: soldOf(String(d.id)),
+    })),
+  )
+  if (allocations.length === 0) return
+  retorno.deliveryAllocations = allocations
+  for (const a of allocations) {
+    const delivery = deliveries.find((d) => String(d.id) === a.deliveryId)
+    if (!delivery) continue
+    delivery.returnedQty = (delivery.returnedQty ?? 0) + a.quantity
+    delivery.lastReturnId = String(retorno.id)
+  }
+}
 const statsByDay = new Map<string, DailyStats>()
 
 function emptyStats(dayKey: string): DailyStats {
@@ -544,6 +591,7 @@ export const demoBackend = {
       if (meta?.payment) movement.payment = meta.payment
       if (meta?.customerName) movement.customerName = meta.customerName
       if (meta?.customerPhone) movement.customerPhone = meta.customerPhone
+      if (movement.type === 'retorno') allocateDemoReturn(movement)
 
       movements.unshift(movement)
       applyToStats(movement, counted)
@@ -600,13 +648,28 @@ export const demoBackend = {
     return Promise.resolve()
   },
 
-  listPage(options: { type?: MovementType } = {}): Promise<{
+  listPage(options: { type?: MovementType; fromDayKey?: string; toDayKey?: string } = {}): Promise<{
     movements: Movement[]
     cursor: undefined
     hasMore: boolean
   }> {
-    const list = options.type ? movements.filter((m) => m.type === options.type) : movements
+    const list = movements.filter(
+      (m) =>
+        (!options.type || m.type === options.type) &&
+        (!options.fromDayKey || m.dayKey >= options.fromDayKey) &&
+        (!options.toDayKey || m.dayKey <= options.toDayKey),
+    )
     return Promise.resolve({ movements: list.slice(0, 60), cursor: undefined, hasMore: false })
+  },
+
+  listOpenPending(): Promise<Movement[]> {
+    const deliveries = movements.filter((m) => m.deliveryPending === true)
+    const pendingSales = movements.filter((m) => m.saleStatus === 'pendiente')
+    const deliveryIds = new Set(deliveries.map((d) => String(d.id)))
+    const linkedSales = movements.filter((m) => m.deliveryId !== undefined && deliveryIds.has(m.deliveryId))
+    const saleIds = new Set([...pendingSales, ...linkedSales].map((m) => m.saleId ?? m.id))
+    const returns = movements.filter((m) => m.type === 'return' && m.saleId !== undefined && saleIds.has(m.saleId))
+    return Promise.resolve([...deliveries, ...pendingSales, ...linkedSales, ...returns])
   },
 
   listForExport(fromDayKey: string, toDayKey_: string): Promise<Movement[]> {
@@ -650,10 +713,6 @@ export const demoBackend = {
 
   getById(id: string): Promise<Movement | null> {
     return Promise.resolve(movements.find((m) => m.id === id) ?? null)
-  },
-
-  listRecent(max: number): Promise<Movement[]> {
-    return Promise.resolve(movements.slice(0, max))
   },
 
   listRecentDays(days: number): Promise<DailyStats[]> {
