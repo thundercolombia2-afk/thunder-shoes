@@ -1,8 +1,9 @@
 /** Piezas compartidas entre las pantallas del flujo de escaneo e inventario. */
 
-import type { ReactNode } from 'react'
+import { useId, useState, type ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useSession } from '@/app/session'
+import { useIsMobile } from '@/app/useMediaQuery'
 import { Icon } from '@/ui/Icon'
 import type { Bodega, Movement, SaleStatus, Store, VariantWithProduct } from '@/domain/models'
 import { ROLE_LABEL, type Role } from '@/domain/users'
@@ -383,4 +384,61 @@ export function statusStyles(status: StockStatus): { label: string; bg: string; 
 export function cellColor(stock: number, minStock: number): string {
   const s = variantStatus(stock, minStock)
   return s === 'out' ? 'var(--color-danger)' : s === 'low' ? 'var(--iw-amber)' : 'var(--text-primary)'
+}
+
+/**
+ * Filtros plegables. En móvil ocupan una sola línea ("Filtros · Hoy") y se
+ * abren al tocarla; en escritorio sobra espacio y se muestran siempre. El
+ * resumen dice qué está filtrando para que no haga falta abrirlo para saberlo.
+ */
+export function FilterDrawer({
+  summary,
+  active = false,
+  children,
+}: {
+  summary: string
+  /** Hay algún filtro distinto del de por defecto: el botón se resalta. */
+  active?: boolean
+  children: ReactNode
+}) {
+  const isMobile = useIsMobile()
+  const [open, setOpen] = useState(false)
+  const panelId = useId()
+  if (!isMobile) return <>{children}</>
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        aria-controls={panelId}
+        className="iw-press"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          width: '100%',
+          height: 44,
+          padding: '0 14px',
+          border: `1.5px solid ${active ? 'var(--iw-plum)' : 'var(--border-subtle)'}`,
+          borderRadius: 'var(--radius-md)',
+          background: 'var(--surface-card)',
+          color: 'var(--text-primary)',
+          font: '600 14px var(--font-body)',
+          cursor: 'pointer',
+          boxSizing: 'border-box',
+        }}
+      >
+        <Icon name="calendar" size={17} color={active ? 'var(--iw-plum)' : 'var(--text-muted)'} />
+        <b style={{ color: active ? 'var(--iw-plum)' : 'var(--text-primary)' }}>Filtros</b>
+        <span style={{ flex: 1, minWidth: 0, textAlign: 'left', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          · {summary}
+        </span>
+        <span style={{ display: 'flex', transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }}>
+          <Icon name="chevron-down" size={18} color="var(--text-muted)" />
+        </span>
+      </button>
+      {open ? <div id={panelId}>{children}</div> : null}
+    </div>
+  )
 }
