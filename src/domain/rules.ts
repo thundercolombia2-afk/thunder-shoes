@@ -393,4 +393,5 @@ export const SALE_STATUS_LABEL: Record<SaleStatus, string> = {
   cobrado: 'Cobrado',
   pendiente: 'Pendiente',
   devuelto: 'Devuelto',
+  anulado: 'Anulada',
 }

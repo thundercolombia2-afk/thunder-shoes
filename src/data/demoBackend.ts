@@ -213,8 +213,8 @@ function emptyStats(dayKey: string): DailyStats {
  * 'pendiente' no es ingreso todavía, y su devolución tampoco resta lo que
  * nunca se sumó — ver `saleWasCounted` en `domain/models.ts`.
  */
-function applyToStats(m: Movement, counted = true) {
-  const s = statsByDay.get(m.dayKey) ?? emptyStats(m.dayKey)
+function applyToStats(m: Movement, counted = true, dayKey = m.dayKey) {
+  const s = statsByDay.get(dayKey) ?? emptyStats(dayKey)
   if (m.type === 'sale') {
     if (counted) {
       s.margin = money(s.margin + m.margin)
@@ -229,7 +229,8 @@ function applyToStats(m: Movement, counted = true) {
     s.purchasesTotal = money(s.purchasesTotal + m.total)
     s.purchasesCount += 1
   } else if (m.type === 'return') {
-    s.returnsTotal = money(s.returnsTotal + m.total)
+    // Una anulación no cuenta como devolución (igual que el backend real).
+    if (!m.voidOf) s.returnsTotal = money(s.returnsTotal + m.total)
     if (counted) {
       s.margin = money(s.margin + m.margin)
       s.salesTotal = money(s.salesTotal - m.total)
@@ -241,7 +242,7 @@ function applyToStats(m: Movement, counted = true) {
   } else {
     s.margin = money(s.margin + m.margin)
   }
-  statsByDay.set(m.dayKey, s)
+  statsByDay.set(dayKey, s)
 }
 
 // Movimientos iniciales para poblar historial y dashboard
@@ -517,8 +518,27 @@ export const demoBackend = {
     return Promise.resolve()
   },
 
-  recordMany(drafts: MovementDraft[], actor: MovementActor, meta?: SaleMeta): Promise<Movement[]> {
+  recordMany(
+    drafts: MovementDraft[],
+    actor: MovementActor,
+    meta?: SaleMeta,
+    options?: { voidSaleId?: string; voidReason?: string },
+  ): Promise<Movement[]> {
     const occurredAt = new Date()
+    // Anulación: mismas comprobaciones y mismo día de la plata que el backend real.
+    const voidedSale = options?.voidSaleId ? movements.find((m) => m.id === options.voidSaleId) : undefined
+    if (options?.voidSaleId) {
+      if (!voidedSale || voidedSale.type !== 'sale') {
+        return Promise.reject(new DomainError('BARCODE_NOT_FOUND', 'Esa venta ya no existe'))
+      }
+      const status = voidedSale.saleStatus ?? 'cobrado'
+      if (status === 'anulado' || status === 'devuelto') {
+        return Promise.reject(new DomainError('ALREADY_RETURNED', 'Esa venta ya está anulada o devuelta'))
+      }
+    }
+    const voidCounted = (voidedSale?.saleStatus ?? 'cobrado') === 'cobrado'
+    const voidStatsDay =
+      voidedSale && voidCounted && voidedSale.saleStatusAt ? toDayKey(voidedSale.saleStatusAt) : voidedSale?.dayKey
     const saleId = `demo-s${movements.length + 1000}`
     const created: Movement[] = []
 
@@ -581,6 +601,10 @@ export const demoBackend = {
         const status = meta?.statusOverride ?? defaultSaleStatus(meta?.payment)
         if (status !== 'cobrado') movement.saleStatus = status
         counted = status === 'cobrado'
+      } else if (draft.type === 'return' && voidedSale) {
+        counted = voidCounted
+        movement.voidOf = String(voidedSale.id)
+        movement.voidReason = options?.voidReason ?? ''
       } else if (draft.type === 'return') {
         counted = draft.saleWasCounted ?? true
       }
@@ -594,8 +618,17 @@ export const demoBackend = {
       if (movement.type === 'retorno') allocateDemoReturn(movement)
 
       movements.unshift(movement)
-      applyToStats(movement, counted)
+      applyToStats(movement, counted, movement.voidOf ? voidStatsDay : movement.dayKey)
       created.push(movement)
+    }
+
+    if (voidedSale && created[0]) {
+      voidedSale.saleStatus = 'anulado'
+      voidedSale.saleStatusAt = occurredAt
+      voidedSale.saleStatusBy = actor.userName
+      voidedSale.saleStatusByUid = actor.userId
+      voidedSale.voidMovementId = String(created[0].id)
+      voidedSale.voidReason = options?.voidReason ?? ''
     }
 
     notify()

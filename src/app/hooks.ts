@@ -187,5 +187,11 @@ export function useMovements(filter: MovementsFilter = {}) {
     if (!loading && hasMore) void load(false)
   }, [load, loading, hasMore])
 
-  return { movements, loading, hasMore, error, loadMore }
+  /** Vuelve a pedir la primera página con los mismos filtros (tras anular, p. ej.). */
+  const reload = useCallback(() => {
+    cursor.current = undefined
+    void load(true)
+  }, [load])
+
+  return { movements, loading, hasMore, error, loadMore, reload }
 }

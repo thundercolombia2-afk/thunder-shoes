@@ -211,12 +211,13 @@ service cloud.firestore {
       // El libro mayor no se EDITA: los importes, cantidades, ubicaciones y
       // firmas de un asiento son intocables. Dos únicas excepciones, cada una
       // acotada a sus propios campos:
-      //  · el estado de cobro de una venta (cobrado / pendiente / devuelto),
+      //  · el estado de cobro de una venta (cobrado / pendiente / devuelto /
+      //    anulado),
       //    porque la plata de una venta por transportadora entra días después;
       //  · la bandera "pendiente" de una ENTREGA, que solo puede tocar el
       //    ENCARGADO (targetUserId) al que bodega se la asignó.
       allow update: if hasProfile()
-        && (onlySaleStatusChanged() || onlyDeliveryPendingChanged() || onlyReturnedQtyChanged());
+        && (onlySaleStatusChanged(movementId) || onlyDeliveryPendingChanged() || onlyReturnedQtyChanged());
       // Borrarlo solo lo puede hacer la DUEÑA (vaciar historial para empezar
       // limpio); ningún empleado ni socio normal.
       allow delete: if isOwner();
@@ -227,14 +228,34 @@ service cloud.firestore {
     // verdad (si no, se podría reescribir la firma de un cambio ajeno) y la
     // firma queda atada al uid REAL y a la hora del servidor — un nombre lo
     // escribe el cliente, el uid no.
-    function onlySaleStatusChanged() {
+    //
+    // `anulado` es DEFINITIVO (una venta anulada ya no cambia de estado) y solo
+    // se puede poner junto con el asiento que la anula: una devolución nueva,
+    // creada en la MISMA escritura, con `voidOf` = esta venta y su misma
+    // cantidad. Así marcar "anulada" no puede ser un atajo para esconder una
+    // venta sin devolver el par ni sacar la plata.
+    function onlySaleStatusChanged(movementId) {
+      let next = request.resource.data;
+      let keys = next.diff(resource.data).affectedKeys();
       return resource.data.type == 'sale'
-        && request.resource.data.diff(resource.data).affectedKeys()
-             .hasOnly(['saleStatus', 'saleStatusAt', 'saleStatusBy', 'saleStatusByUid'])
-        && request.resource.data.saleStatus in ['cobrado', 'pendiente', 'devuelto']
-        && request.resource.data.saleStatus != resource.data.get('saleStatus', 'cobrado')
-        && request.resource.data.saleStatusByUid == uid()
-        && request.resource.data.saleStatusAt == request.time;
+        && resource.data.get('saleStatus', 'cobrado') != 'anulado'
+        && next.saleStatus in ['cobrado', 'pendiente', 'devuelto', 'anulado']
+        && next.saleStatus != resource.data.get('saleStatus', 'cobrado')
+        && next.saleStatusByUid == uid()
+        && next.saleStatusAt == request.time
+        && (next.saleStatus == 'anulado'
+              ? keys.hasOnly(['saleStatus', 'saleStatusAt', 'saleStatusBy', 'saleStatusByUid', 'voidMovementId', 'voidReason'])
+                  && voidedInSameWrite(movementId, next)
+              : keys.hasOnly(['saleStatus', 'saleStatusAt', 'saleStatusBy', 'saleStatusByUid']));
+    }
+
+    function voidedInSameWrite(movementId, next) {
+      let voidPath = /databases/$(database)/documents/movements/$(next.voidMovementId);
+      return next.voidMovementId is string
+        && !exists(voidPath)
+        && getAfter(voidPath).data.type == 'return'
+        && getAfter(voidPath).data.get('voidOf', '') == movementId
+        && getAfter(voidPath).data.quantity == resource.data.quantity;
     }
 
     // Cuántos pares de una ENTREGA ya volvieron a bodega. Lo mueve el retorno al

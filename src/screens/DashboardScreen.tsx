@@ -113,7 +113,8 @@ export function DashboardScreen() {
         .listSalesInRange(dateFrom, dateTo)
         .then((sales) => {
           if (stale) return
-          setIncomes(sales)
+          // Una venta anulada nunca pasó: no es ingreso (la tarjeta ya la restó).
+          setIncomes(sales.filter((m) => m.saleStatus !== 'anulado'))
           setIncomesState('ok')
         })
         .catch((e: unknown) => {
