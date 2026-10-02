@@ -20,6 +20,7 @@ import {
   type CollectionReference,
   type DocumentData,
   type QueryDocumentSnapshot,
+  type Transaction,
 } from 'firebase/firestore'
 import { db } from '../firebase'
 import { dailyStatsCol, dailyStatsRef, movementsRef, productRef, variantRef } from '../paths'
@@ -30,6 +31,7 @@ import {
   variantFromDoc,
 } from '../converters'
 import {
+  VOID_RETURN_REASON,
   type Movement,
   type MovementDraft,
   type MovementType,
@@ -58,6 +60,35 @@ export interface MovementActor {
   storeId: StoreId
   userId: UserId
   userName: string
+}
+
+/** Anular una venta: la devolución que la revierte (ver `voidSaleLine`). */
+export interface VoidOptions {
+  voidSaleId?: string
+  voidReason?: string
+}
+
+/**
+ * Lee, dentro de la transacción, la venta que se va a anular y decide:
+ *  · si su plata se había contado (`cobrado`) o no (`pendiente`);
+ *  · en qué día se contó: el de la venta, o el del último paso a `cobrado`
+ *    (`saleStatusAt`) si era por transportadora y se cobró después.
+ * Rechaza las ventas ya anuladas o devueltas.
+ */
+async function readVoidableSale(
+  tx: Transaction,
+  saleId: string,
+): Promise<{ sale: Movement; counted: boolean; statsDayKey: string }> {
+  const snap = await tx.get(doc(movementsRef(), saleId))
+  if (!snap.exists()) throw new DomainError('BARCODE_NOT_FOUND', 'Esa venta ya no existe')
+  const sale = movementFromDoc(snap as QueryDocumentSnapshot<DocumentData>)
+  if (sale.type !== 'sale') throw new DomainError('ALREADY_RETURNED', 'Ese movimiento no es una venta')
+  const status = sale.saleStatus ?? 'cobrado'
+  if (status === 'anulado') throw new DomainError('ALREADY_RETURNED', 'Esa venta ya está anulada')
+  if (status === 'devuelto') throw new DomainError('ALREADY_RETURNED', 'Esa venta ya se devolvió: no se puede anular')
+  const counted = status === 'cobrado'
+  const statsDayKey = counted && sale.saleStatusAt ? toDayKey(sale.saleStatusAt) : sale.dayKey
+  return { sale, counted, statsDayKey }
 }
 
 export interface RecordedMovement {
@@ -102,12 +133,16 @@ export const movementRepository = {
     drafts: MovementDraft[],
     actor: MovementActor,
     meta?: SaleMeta,
+    options?: VoidOptions,
   ): Promise<Movement[]> {
     const lines = mergeDrafts(drafts)
     if (lines.length === 0) {
       throw new DomainError('INVALID_QUANTITY', 'No hay nada que registrar')
     }
-    if (DEMO) return demoBackend.recordMany(lines, actor, meta)
+    if (options?.voidSaleId && (lines.length !== 1 || lines[0]?.type !== 'return')) {
+      throw new DomainError('INVALID_QUANTITY', 'Una anulación es una sola devolución')
+    }
+    if (DEMO) return demoBackend.recordMany(lines, actor, meta, options)
 
     const occurredAt = new Date()
     const dayKey = toDayKey(occurredAt)
@@ -134,6 +169,10 @@ export const movementRepository = {
       const candidateSnaps = await Promise.all(
         candidatesByLine.map((candidates) => Promise.all(candidates.map((c) => tx.get(doc(movementsRef(), c.id))))),
       )
+      // Anulación: se relee la venta DENTRO de la transacción. Su estado decide
+      // si la plata se había contado y en qué día; leído afuera podría haber
+      // cambiado (alguien la marca cobrada justo ahora).
+      const voided = options?.voidSaleId ? await readVoidableSale(tx, options.voidSaleId) : null
 
       const movements: Movement[] = []
       // Paralelo a `movements`: si esa línea le mueve la aguja a `dailyStats`.
@@ -158,7 +197,9 @@ export const movementRepository = {
 
         const product = productFromDoc(productSnap as QueryDocumentSnapshot<DocumentData>)
         const variant = variantFromDoc(variantSnap as QueryDocumentSnapshot<DocumentData>)
-        if (!product.active) throw new DomainError('PRODUCT_INACTIVE', 'Referencia desactivada')
+        // Una anulación SÍ puede tocar una referencia desactivada: se puede anular
+        // una venta vieja de un modelo que ya no se vende.
+        if (!product.active && !voided) throw new DomainError('PRODUCT_INACTIVE', 'Referencia desactivada')
 
         // Ubicaciones efectivas: una venta sale del local del vendedor y una
         // devolución de cliente vuelve a ese mismo local, aunque la UI no las
@@ -211,6 +252,12 @@ export const movementRepository = {
           const status = meta?.statusOverride ?? defaultSaleStatus(meta?.payment)
           if (status !== 'cobrado') movement.saleStatus = status
           counted.push(status === 'cobrado')
+        } else if (draft.type === 'return' && voided) {
+          // La anulación resta solo lo que se había contado: una venta que
+          // seguía 'pendiente' nunca entró a `dailyStats`.
+          counted.push(voided.counted)
+          movement.voidOf = String(voided.sale.id)
+          movement.voidReason = options?.voidReason ?? ''
         } else if (draft.type === 'return') {
           counted.push(draft.saleWasCounted ?? true)
         } else {
@@ -323,9 +370,27 @@ export const movementRepository = {
         tx.update(productRef(productId), update)
       })
 
-      tx.set(dailyStatsRef(dayKey), buildDailyDelta(movements, counted, actor.storeId, occurredAt), {
+      // Una anulación saca la plata del día en que se CONTÓ la venta (como si
+      // nunca hubiera pasado), no de hoy como una devolución.
+      const statsDayKey = voided?.statsDayKey ?? dayKey
+      tx.set(dailyStatsRef(statsDayKey), buildDailyDelta(movements, counted, actor.storeId, occurredAt, statsDayKey), {
         merge: true,
       })
+
+      if (voided) {
+        const voidMovement = movements[0]
+        if (!voidMovement) throw new DomainError('INVALID_QUANTITY', 'No se registró la anulación')
+        // La regla de Firestore exige que esta devolución se cree en la MISMA
+        // escritura (`voidMovementId`) y que anulado sea definitivo.
+        tx.update(doc(movementsRef(), String(voided.sale.id)), {
+          saleStatus: 'anulado',
+          saleStatusAt: serverTimestamp(),
+          saleStatusBy: actor.userName,
+          saleStatusByUid: actor.userId,
+          voidMovementId: String(voidMovement.id),
+          voidReason: options?.voidReason ?? '',
+        })
+      }
 
       return movements
     })
@@ -400,6 +465,73 @@ export const movementRepository = {
     // Marcar el estado es lo último y no es crítico: si falla, el candado de
     // arriba impide que la devolución se repita.
     await this.setSaleStatus(sale.id, 'devuelto', actor)
+    return movement
+  },
+
+  /**
+   * ANULA una línea de venta registrada por error (con el PIN de la dueña, que
+   * verifica la pantalla). Es como si nunca hubiera pasado:
+   *  · el par vuelve a la ubicación de donde salió;
+   *  · la plata sale del día en que se CONTÓ como ingreso (el de la venta, o el
+   *    del cobro si era por transportadora); si seguía pendiente, no se resta
+   *    nada porque nunca se contó;
+   *  · si se había cobrado desde una entrega, esa entrega vuelve a "por cobrar"
+   *    (la devolución cuelga del mismo `saleId`);
+   *  · la venta queda en el historial marcada `anulado`, con quién, cuándo y
+   *    el motivo. Es DEFINITIVO.
+   *
+   * Es UN asiento de devolución con `voidOf` más el cambio de estado de la
+   * venta, en una sola transacción. Igual que `returnSaleToBodega`, comprueba
+   * contra el libro mayor que a la línea no le hayan devuelto nada: un par
+   * devuelto (o ya anulado) no se puede anular.
+   */
+  async voidSaleLine(sale: Movement, reason: string, actor: MovementActor): Promise<Movement> {
+    if (sale.type !== 'sale') {
+      throw new DomainError('ALREADY_RETURNED', 'Ese movimiento no es una venta')
+    }
+    // Antes que el libro mayor: así una venta ya anulada dice eso, y no "ya le
+    // devolvieron pares" (su anulación es una devolución).
+    if (sale.saleStatus === 'anulado') throw new DomainError('ALREADY_RETURNED', 'Esa venta ya está anulada')
+    const saleId = sale.saleId ?? sale.id
+    const related = await this.listBySaleIds([saleId])
+    if (related.some((m) => m.voidOf === String(sale.id))) {
+      throw new DomainError('ALREADY_RETURNED', 'Esa venta ya está anulada')
+    }
+    const line = groupSales(related)
+      .find((s) => s.saleId === saleId)
+      ?.lines.find((l) => String(l.variantId) === String(sale.variantId))
+    const remaining = line ? line.remaining : sale.quantity
+    if (remaining < sale.quantity) {
+      throw new DomainError('ALREADY_RETURNED', 'A esa venta ya le devolvieron pares: no se puede anular', { remaining })
+    }
+
+    // Firmada contra el local que HIZO la venta, para que la plata salga del
+    // desglose por local correcto.
+    const asSaleStore: MovementActor = { ...actor, storeId: sale.storeId }
+    const [movement] = await this.recordMany(
+      [
+        {
+          type: 'return',
+          variantId: sale.variantId,
+          quantity: sale.quantity,
+          returnReason: VOID_RETURN_REASON,
+          // De vuelta a donde salió el par (local o bodega).
+          toLocation: sale.fromLocation ?? storeKey(sale.storeId),
+          // Precio y costo CONGELADOS en la venta: revierte exactamente lo que entró.
+          unitPriceOverride: sale.snapshot.unitPrice,
+          unitCostOverride: sale.snapshot.unitCost,
+        },
+      ],
+      asSaleStore,
+      {
+        payment: sale.payment ?? '',
+        saleId,
+        ...(sale.customerName ? { customerName: sale.customerName } : {}),
+        ...(sale.customerPhone ? { customerPhone: sale.customerPhone } : {}),
+      },
+      { voidSaleId: String(sale.id), voidReason: reason.trim() },
+    )
+    if (!movement) throw new DomainError('INVALID_QUANTITY', 'No se registró la anulación')
     return movement
   },
 
@@ -884,6 +1016,7 @@ function buildDailyDelta(
   counted: boolean[],
   storeId: StoreId,
   now: Date,
+  statsDayKey?: string,
 ): DocumentData {
   const totals = {
     margin: 0,
@@ -899,7 +1032,7 @@ function buildDailyDelta(
   const bump = (productId: ProductId, units: number) =>
     unitsByProduct.set(productId, (unitsByProduct.get(productId) ?? 0) + units)
 
-  const dayKey = movements[0]?.dayKey ?? toDayKey(now)
+  const dayKey = statsDayKey ?? movements[0]?.dayKey ?? toDayKey(now)
 
   movements.forEach((m, i) => {
     const isCounted = counted[i] ?? true
@@ -926,7 +1059,9 @@ function buildDailyDelta(
         // o no. Pero si la venta que revierte nunca se contó como ingreso
         // (seguía 'pendiente'), no hay nada que restar de `salesTotal`: restar
         // igual la dejaría en negativo por plata que jamás entró.
-        totals.returnsTotal += m.total
+        // Una ANULACIÓN no es una devolución: la venta nunca debió existir, así
+        // que no suma a "devoluciones"; solo revierte lo que se había contado.
+        if (!m.voidOf) totals.returnsTotal += m.total
         if (!isCounted) break
         totals.margin += m.margin
         // Una devolución revierte la venta: unidades, plata del día y plata del

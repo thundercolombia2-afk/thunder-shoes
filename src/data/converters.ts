@@ -201,6 +201,9 @@ export const movementFromDoc = (snap: QueryDocumentSnapshot<DocumentData>): Move
   if (d.deliveryPendingBy) movement.deliveryPendingBy = String(d.deliveryPendingBy)
   if (d.deliveryPendingByUid) movement.deliveryPendingByUid = String(d.deliveryPendingByUid) as UserId
   if (typeof d.returnedQty === 'number') movement.returnedQty = d.returnedQty
+  if (d.voidOf) movement.voidOf = String(d.voidOf)
+  if (d.voidMovementId) movement.voidMovementId = String(d.voidMovementId)
+  if (d.voidReason) movement.voidReason = String(d.voidReason)
   if (d.lastReturnId) movement.lastReturnId = String(d.lastReturnId)
   if (Array.isArray(d.deliveryAllocations)) {
     movement.deliveryAllocations = (d.deliveryAllocations as { deliveryId?: unknown; quantity?: unknown }[])

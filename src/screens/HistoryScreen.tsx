@@ -25,6 +25,7 @@ import { formatMoney, formatShortDate, isPlausibleDayKey, recentDayKeys } from '
 import { downloadCsv, toCsv } from '@/lib/csv'
 import { bodegaLabel, FilterDrawer, movementPlace, RoleBadge, SaleStatusChip, type MovementPlace } from './_shared'
 import { SearchBox } from './InventoryScreen'
+import { VoidSaleDialog } from './VoidSaleDialog'
 import { Icon } from '@/ui/Icon'
 
 const TYPE_FILTERS: { label: string; value: MovementType | 'all' }[] = [
@@ -70,7 +71,7 @@ const selectStyle: React.CSSProperties = {
 }
 
 export function HistoryScreen() {
-  const { user, can } = useSession()
+  const { user, can, actor } = useSession()
   const { data: stores } = useStores()
   const bodegas = useBodegas()
   const seeCosts = can('seeCosts')
@@ -86,6 +87,8 @@ export function HistoryScreen() {
   const [team, setTeam] = useState<UserProfile[]>([])
   const [exporting, setExporting] = useState(false)
   const [wiping, setWiping] = useState(false)
+  /** Venta que se está anulando (con el PIN de la dueña). */
+  const [voiding, setVoiding] = useState<Movement | null>(null)
 
   // Para el filtro "Usuario": el equipo completo, sin importar el rol de quien
   // mira (las reglas de Firestore ya permiten leer /users a cualquier firmado).
@@ -103,7 +106,7 @@ export function HistoryScreen() {
   // Las fechas se filtran EN EL SERVIDOR: filtrar en memoria la página de 40
   // más recientes dejaba vacío cualquier día viejo. Una fecha a medio escribir
   // (año 0002…) no se manda: pediría todo el histórico.
-  const { movements, loading, hasMore, loadMore } = useMovements({
+  const { movements, loading, hasMore, loadMore, reload } = useMovements({
     ...(typeFilter === 'all' ? {} : { type: typeFilter }),
     ...(isPlausibleDayKey(dateFrom) ? { fromDayKey: dateFrom } : {}),
     ...(isPlausibleDayKey(dateTo) ? { toDayKey: dateTo } : {}),
@@ -152,7 +155,7 @@ export function HistoryScreen() {
         const place = movementPlace(m, stores, bodegas)
         return [
           formatShortDate(m.occurredAt),
-          MOVEMENT_LABEL[m.type],
+          m.voidOf ? 'Anulación' : MOVEMENT_LABEL[m.type],
           m.snapshot.productName,
           m.snapshot.barcode,
           m.snapshot.size,
@@ -230,6 +233,17 @@ export function HistoryScreen() {
       </div>
 
       {wiping ? <WipeHistoryDialog onClose={() => setWiping(false)} /> : null}
+      {voiding && actor ? (
+        <VoidSaleDialog
+          sale={voiding}
+          actor={actor}
+          onClose={() => setVoiding(null)}
+          onDone={() => {
+            setVoiding(null)
+            reload()
+          }}
+        />
+      ) : null}
 
       <SearchBox value={search} onChange={setSearch} placeholder="Referencia o código…" />
 
@@ -341,7 +355,14 @@ export function HistoryScreen() {
             <Empty text="No hay movimientos que coincidan." />
           ) : (
             rows.map((m) => (
-              <HistoryRow key={m.id} movement={m} admin={seeCosts} place={movementPlace(m, stores, bodegas)} />
+              <HistoryRow
+                key={m.id}
+                movement={m}
+                admin={seeCosts}
+                place={movementPlace(m, stores, bodegas)}
+                // El bodeguero no ve ventas; los demás pueden pedir anular (con el PIN).
+                onVoid={actor && !isBodeguero ? () => setVoiding(m) : undefined}
+              />
             ))
           )}
         </div>
@@ -374,10 +395,13 @@ function HistoryRow({
   movement: m,
   admin,
   place,
+  onVoid,
 }: {
   movement: Movement
   admin: boolean
   place: MovementPlace
+  /** Si se pasa, una venta cobrada o pendiente muestra "Anular". */
+  onVoid?: (() => void) | undefined
 }) {
   const qtyColor = m.type === 'sale' ? 'var(--color-danger)' : 'var(--color-success)'
   const status = saleStatusOf(m)
@@ -408,7 +432,7 @@ function HistoryRow({
           justifySelf: 'start',
         }}
       >
-        {MOVEMENT_LABEL[m.type]}
+        {m.voidOf ? 'Anulación' : MOVEMENT_LABEL[m.type]}
       </span>
       <span style={{ minWidth: 0 }}>
         <span
@@ -425,7 +449,7 @@ function HistoryRow({
         >
           {m.snapshot.productName}
         </span>
-        {m.customerName || m.payment || m.bajaReason || m.returnReason ? (
+        {m.customerName || m.payment || m.bajaReason || m.returnReason || m.voidReason ? (
           <span
             style={{
               display: 'block',
@@ -436,13 +460,33 @@ function HistoryRow({
               textOverflow: 'ellipsis',
             }}
           >
-            {[m.customerName, m.payment, m.bajaReason, m.returnReason].filter(Boolean).join(' · ')}
+            {[m.customerName, m.payment, m.bajaReason, m.returnReason, m.voidReason ? `Motivo: ${m.voidReason}` : '']
+              .filter(Boolean)
+              .join(' · ')}
           </span>
         ) : null}
         {m.type === 'sale' && status !== 'cobrado' ? (
           <span style={{ display: 'block', marginTop: 3 }}>
             <SaleStatusChip status={status} size="sm" />
           </span>
+        ) : null}
+        {onVoid && m.type === 'sale' && (status === 'cobrado' || status === 'pendiente') ? (
+          <button
+            onClick={onVoid}
+            className="iw-press"
+            style={{
+              display: 'block',
+              marginTop: 3,
+              padding: 0,
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+              color: 'var(--color-danger)',
+              font: '700 11px var(--font-body)',
+            }}
+          >
+            Anular
+          </button>
         ) : null}
       </span>
       <span>{m.snapshot.size}</span>

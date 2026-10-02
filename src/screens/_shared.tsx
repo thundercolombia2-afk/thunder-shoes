@@ -347,6 +347,7 @@ export const SALE_STATUS_TONE: Record<SaleStatus, { border: string; text: string
   cobrado: { border: 'rgba(21,119,79,.3)', text: 'var(--color-success)', chip: 'rgba(21,119,79,.12)' },
   pendiente: { border: 'rgba(255,209,0,.55)', text: '#8a6d00', chip: 'rgba(255,209,0,.22)' },
   devuelto: { border: 'rgba(224,52,29,.3)', text: 'var(--color-danger)', chip: 'rgba(224,52,29,.1)' },
+  anulado: { border: 'var(--border-subtle)', text: 'var(--text-muted)', chip: 'var(--iw-off-white)' },
 }
 
 /** Distintivo "Cobrado / Pendiente / Devuelto" de una línea de venta. */

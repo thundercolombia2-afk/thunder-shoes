@@ -26,6 +26,7 @@ import { Button } from '@/ui/Button'
 import { Money } from '@/ui/Money'
 import { ChipPicker, FilterDrawer, ModalHeader, movementPlace, QuantityStepper, SALE_STATUS_TONE, SaleStatusChip } from './_shared'
 import { CobroModal, ErrorNote, Overlay } from './SellModals'
+import { VoidSaleDialog } from './VoidSaleDialog'
 import { mulMoney, type Bodega, type Money as MoneyAmount, type Movement, type SaleStatus, type Store } from '@/domain/models'
 
 type Tab = 'entregas' | 'pendiente' | 'vendido' | 'devuelto' | 'stock'
@@ -119,6 +120,8 @@ export function LocalesScreen() {
   const [tab, setTab] = useState<Tab>('entregas')
   /** Línea de venta a la que se le va a dar retorno a bodega. */
   const [returning, setReturning] = useState<Movement | null>(null)
+  /** Línea de venta que se está anulando (con el PIN de la dueña). */
+  const [voiding, setVoiding] = useState<Movement | null>(null)
   /** Entrega de bodega que se está cobrando (se vendió después de recibirla). */
   const [charging, setCharging] = useState<Movement | null>(null)
   const [busyId, setBusyId] = useState<string | null>(null)
@@ -336,7 +339,11 @@ export function LocalesScreen() {
     [returnedByLine],
   )
   const returns = useMemo(
-    () => (store ? movs.filter((m) => m.type === 'return' && movementLocalId(m) === store.id && inRange(m)) : []),
+    () =>
+      store
+        ? // Una anulación es una devolución en el libro mayor, pero no una devolución de verdad.
+          movs.filter((m) => m.type === 'return' && !m.voidOf && movementLocalId(m) === store.id && inRange(m))
+        : [],
     [movs, store, inRange],
   )
   const deliveries = useMemo(
@@ -401,7 +408,10 @@ export function LocalesScreen() {
 
   // El titular va NETO, igual que el dashboard: lo devuelto no es plata vendida.
   // Lo devuelto no desaparece, se ve en su propia casilla del desglose de abajo.
-  const netSales = useMemo(() => sales.filter((m) => !isReturned(m)), [sales, isReturned])
+  const netSales = useMemo(
+    () => sales.filter((m) => !isReturned(m) && saleStatusOf(m) !== 'anulado'),
+    [sales, isReturned],
+  )
   const salesTotal = useMemo(() => netSales.reduce((s, m) => s + m.total, 0), [netSales])
   const salesUnits = useMemo(() => netSales.reduce((s, m) => s + m.quantity, 0), [netSales])
   /**
@@ -421,9 +431,11 @@ export function LocalesScreen() {
       cobrado: { total: 0, count: 0 },
       pendiente: { total: 0, count: 0 },
       devuelto: { total: 0, count: 0 },
+      anulado: { total: 0, count: 0 },
     }
     for (const m of sales) {
-      const bucket = acc[isReturned(m) ? 'devuelto' : saleStatusOf(m)]
+      const status = saleStatusOf(m)
+      const bucket = acc[status === 'anulado' ? 'anulado' : isReturned(m) ? 'devuelto' : status]
       bucket.total += m.total
       bucket.count += 1
     }
@@ -640,6 +652,7 @@ export function LocalesScreen() {
                         canAct={actor !== null}
                         onStatus={(status) => void setStatus(m, status)}
                         onReturnToBodega={() => setReturning(m)}
+                        onVoid={() => setVoiding(m)}
                         onOpen={() => setDetail(m)}
                       />
                     ))
@@ -666,6 +679,7 @@ export function LocalesScreen() {
                       canAct={actor !== null}
                       onStatus={(status) => void setStatus(m, status)}
                       onReturnToBodega={() => setReturning(m)}
+                      onVoid={() => setVoiding(m)}
                       onOpen={() => setDetail(m)}
                     />
                   ))
@@ -770,6 +784,22 @@ export function LocalesScreen() {
         />
       ) : null}
 
+      {voiding && actor ? (
+        <VoidSaleDialog
+          sale={voiding}
+          actor={actor}
+          onClose={() => setVoiding(null)}
+          onDone={(voided) => {
+            // La venta puede ser vieja (fuera de lo que trae `reload`): se marca
+            // anulada aquí mismo, y `reload` trae la anulación (que es de hoy).
+            const id = voiding.id
+            if (voided) setMovs((prev) => prev.map((x) => (x.id === id ? { ...x, saleStatus: 'anulado' } : x)))
+            setVoiding(null)
+            reload()
+          }}
+        />
+      ) : null}
+
       {returning && actor ? (
         <ReturnToBodegaModal
           movement={returning}
@@ -843,6 +873,7 @@ function SaleRow({
   canAct,
   onStatus,
   onReturnToBodega,
+  onVoid,
   onOpen,
 }: {
   movement: Movement
@@ -852,10 +883,12 @@ function SaleRow({
   canAct: boolean
   onStatus: (status: SaleStatus) => void
   onReturnToBodega: () => void
+  /** Anular la venta (registrada por error), con el PIN de la dueña. */
+  onVoid: () => void
   /** Abre la tarjeta de detalle completo (sin recortar) de esta línea. */
   onOpen?: () => void
 }) {
-  const status = returned ? 'devuelto' : saleStatusOf(m)
+  const status = saleStatusOf(m) === 'anulado' ? 'anulado' : returned ? 'devuelto' : saleStatusOf(m)
   return (
     <MovRow
       title={`${m.snapshot.productName} · T${m.snapshot.size}`}
@@ -869,7 +902,7 @@ function SaleRow({
       highlight={status === 'pendiente'}
       onOpen={onOpen}
       actions={
-        canAct && status !== 'devuelto' ? (
+        canAct && status !== 'devuelto' && status !== 'anulado' ? (
           <>
             {status !== 'cobrado' ? (
               <Button variant="success" size="sm" disabled={busy} onClick={() => onStatus('cobrado')}>
@@ -885,6 +918,9 @@ function SaleRow({
                 Retorno a bodega
               </Button>
             ) : null}
+            <Button variant="ghost" size="sm" disabled={busy} onClick={onVoid}>
+              Anular
+            </Button>
           </>
         ) : null
       }

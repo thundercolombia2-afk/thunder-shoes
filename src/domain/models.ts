@@ -203,7 +203,13 @@ export const RETURN_REASONS = [
   'Error en la venta',
   'Otro',
 ] as const
-export type ReturnReason = (typeof RETURN_REASONS)[number]
+/**
+ * Razón de la devolución que ANULA una venta. La pone el sistema (ver
+ * `voidSaleLine`); no está en `RETURN_REASONS` para que no aparezca como
+ * opción en una devolución de mostrador.
+ */
+export const VOID_RETURN_REASON = 'Anulación'
+export type ReturnReason = (typeof RETURN_REASONS)[number] | typeof VOID_RETURN_REASON
 
 /**
  * Formas de pago que se aceptan en caja. Se guardan en el movimiento para
@@ -234,9 +240,12 @@ export const DEFERRED_PAYMENTS: readonly PaymentMethod[] = ['Interrapidísimo']
  *  · cobrado  — la plata ya entró (lo normal).
  *  · pendiente — se despachó por transportadora; el dinero llega después.
  *  · devuelto — el cliente no lo pagó y el par ya volvió a bodega.
+ *  · anulado  — se registró por error y se anuló con el PIN de la dueña: es
+ *    como si nunca hubiera pasado (el par volvió a su ubicación y la plata
+ *    salió del día en que se había contado). Es DEFINITIVO.
  * Una venta vieja sin el campo se lee como `cobrado`.
  */
-export const SALE_STATUSES = ['cobrado', 'pendiente', 'devuelto'] as const
+export const SALE_STATUSES = ['cobrado', 'pendiente', 'devuelto', 'anulado'] as const
 export type SaleStatus = (typeof SALE_STATUSES)[number]
 
 /**
@@ -358,6 +367,18 @@ export interface Movement {
   saleStatusAt?: Date
   saleStatusBy?: string
   saleStatusByUid?: UserId
+
+  /**
+   * ANULACIÓN de una venta registrada por error. La anulación es un asiento de
+   * devolución (`type: 'return'`) que revierte la línea: devuelve el par a su
+   * ubicación y saca la plata del día en que se había contado.
+   *  · En la devolución que anula: `voidOf` es el id de la venta anulada.
+   *  · En la venta anulada: `voidMovementId` es el id de esa devolución.
+   *  · En las dos: `voidReason`, el motivo que escribió quien anuló.
+   */
+  voidOf?: string
+  voidMovementId?: string
+  voidReason?: string
 
   /**
    * Agrupa las líneas de una misma venta. Un carrito de 3 pares genera 3
